@@ -1,82 +1,13 @@
 
-# QuASAr (slim)
 
-Minimal pipeline: analyze a Qiskit circuit, partition into independent subcircuits, plan per-partition backends,
-and execute with a multithreaded simulation engine. Includes baseline runners and plotting.
-
-## Install
+### Fast `clifford_plus_rot`
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python run_bench.py --kind clifford_plus_rot   --num-qubits 64 --depth 200 --rot-prob 0.2 --angle-scale 0.1   --block-size 8 --pair-scope block --out result.json
 ```
 
-## Unified run (status logging + multithreading)
+### Suite with optional qubit cap for non-disjoint circuits
 
 ```bash
-python run_all.py --kind ghz_clusters_random --num-qubits 64 --block-size 8 --depth 200   --max-ram-gb 64 --max-workers 0 --heartbeat-sec 5 --stuck-warn-sec 60 --out result.json --log-level INFO
+python run_suite.py --out-dir suite_out --num-qubits 64 96 --block-size 8   --max-ram-gb 64 --sv-ampops-per-sec 5e9 --log-level INFO   --non-disjoint-qubits 32
 ```
-
-## Baselines
-
-```bash
-# Whole-circuit baselines (all three)
-python run_baselines.py --kind ghz_clusters_random --num-qubits 64 --block-size 8 --depth 200 --which all --out baselines.json
-
-# Per-partition baselines with an SV cap
-python run_baselines.py --kind ghz_clusters_random --num-qubits 64 --block-size 8 --depth 200 --which sv,dd --per-partition --max-ram-gb 64
-```
-
-## Plotting
-
-```bash
-# From SSD run (result.json)
-python plot_results.py --mode ssd --input result.json --out ssd_runtimes.png
-
-# From baselines (baselines.json)
-python plot_results.py --mode baselines --input baselines.json --out baseline_runtimes.png
-```
-
-
-### Baseline estimation for whole-circuit failures
-
-When a whole-circuit **SV** baseline exceeds `--max-ram-gb`, the runner reports:
-- `estimate.mem_bytes = 16 * 2^n`,
-- `estimate.amp_ops = 2^n * (oneq + 4 * twoq)`,
-- optional `estimate.time_est_sec = amp_ops / --sv-ampops-per-sec` if provided.
-
-For **DD** unavailable or **Tableau** inapplicable (non‑Clifford), a **worst‑case SV bound** is returned in `estimate`.
-
-Example with an assumed SV throughput (amp‑ops per second):
-```bash
-python run_baselines.py --kind ghz_clusters_random --num-qubits 64 --block-size 8 --depth 200 \
-  --which sv,dd,tableau --max-ram-gb 64 --sv-ampops-per-sec 5e9 --out baselines.json
-python plot_results.py --mode baselines --input baselines.json --out baselines.png
-```
-Labels marked `(est)` use the theoretical time estimate; `(fail)` had no time estimate.
-
-
-## Compare QuASAr vs baselines (wall clock)
-
-`run_all.py` writes the QuASAr wall time (`execution.meta.wall_elapsed_s`). Combine that with baselines:
-
-```bash
-python run_all.py --out result.json
-python run_baselines.py --which sv,dd,tableau --out baselines.json
-
-# Provide both files to the compare plot (use 'SSD|BASELINES' shorthand)
-python plot_results.py --mode compare --input "result.json|baselines.json" --out compare.png
-```
-
-
-## Benchmark suite
-
-Run a small suite inspired by stitched‑disjoint and Clifford+rotations (parametrized):
-
-```bash
-python run_suite.py --out-dir suite_out --num-qubits 64 96 --block-size 8   --max-ram-gb 64 --sv-ampops-per-sec 5e9 --log-level INFO
-```
-
-This writes one JSON per case plus `suite_out/index.json` summarizing:
-- QuASAr wall time (parallel partitions),
-- Baseline whole-circuit results (measured or `(est)` with memory/time estimates).

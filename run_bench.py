@@ -18,6 +18,8 @@ def main():
     p.add_argument("--neighbor-bridge-layers", type=int, default=0)
     p.add_argument("--rot-prob", type=float, default=0.2)
     p.add_argument("--angle-scale", type=float, default=0.1)
+    p.add_argument("--pair-scope", type=str, default="global", choices=["global","block"],
+                   help="Two-qubit pairing scope for clifford_plus_rot")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-ram-gb", type=float, default=64.0)
     p.add_argument("--prefer-dd", action="store_true")
@@ -34,7 +36,8 @@ def main():
     elif args.kind == "random_clifford":
         kw.update(depth=args.depth)
     elif args.kind == "clifford_plus_rot":
-        kw.update(depth=args.depth, rot_prob=args.rot_prob, angle_scale=args.angle_scale)
+        kw.update(depth=args.depth, rot_prob=args.rot_prob, angle_scale=args.angle_scale,
+                  pair_scope=args.pair_scope, block_size=args.block_size)
 
     circ = bench.build(args.kind, **kw)
     analysis = analyze(circ)

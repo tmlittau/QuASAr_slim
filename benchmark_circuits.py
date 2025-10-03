@@ -145,7 +145,9 @@ def stitched_disjoint_diag_bandedqft_diag(*, num_qubits: int, block_size: int = 
 
 def clifford_plus_random_rotations(*, num_qubits: int, depth: int = 200,
                                    rot_prob: float = 0.2, angle_scale: float = 0.1,
-                                   seed: int = 3) -> QuantumCircuit:
+                                   seed: int = 3,
+                                   pair_scope: str = "global",   # "global" or "block"
+                                   block_size: int = 8) -> QuantumCircuit:
     rng = np.random.default_rng(seed)
     qc = QuantumCircuit(num_qubits)
     cliff1 = ["h","s","sdg","x","z"]
@@ -156,10 +158,18 @@ def clifford_plus_random_rotations(*, num_qubits: int, depth: int = 200,
             if rng.random() < rot_prob:
                 theta = float(rng.normal(0.0, angle_scale))
                 getattr(qc, rng.choice(["rx","ry","rz"]))(theta, q)
-        order = list(range(num_qubits))
-        rng.shuffle(order)
-        for a,b in zip(order[::2], order[1::2]):
-            getattr(qc, rng.choice(cliff2))(a,b)
+        if pair_scope == "block":
+            for start in range(0, num_qubits, block_size):
+                end = min(num_qubits, start + block_size)
+                order = list(range(start, end))
+                rng.shuffle(order)
+                for a, b in zip(order[::2], order[1::2]):
+                    getattr(qc, rng.choice(cliff2))(a, b)
+        else:
+            order = list(range(num_qubits))
+            rng.shuffle(order)
+            for a, b in zip(order[::2], order[1::2]):
+                getattr(qc, rng.choice(cliff2))(a, b)
     return qc
 
 CIRCUIT_REGISTRY = {

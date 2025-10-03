@@ -23,8 +23,10 @@ def default_suite(num_qubits: int, block_size: int) -> List[CaseSpec]:
         CaseSpec("stitched_diag_bandedqft_diag", {"num_qubits": num_qubits, "block_size": block_size,
                                                   "depth_pre": 100, "depth_post": 100, "qft_bandwidth": 3,
                                                   "neighbor_bridge_layers": 0, "seed": 2}),
+        # FAST: restrict two-qubit Cliffords to blocks for partitionability
         CaseSpec("clifford_plus_rot", {"num_qubits": num_qubits, "depth": 200, "rot_prob": 0.2,
-                                       "angle_scale": 0.1, "seed": 3}),
+                                       "angle_scale": 0.1, "seed": 3,
+                                       "pair_scope": "block", "block_size": block_size}),
         CaseSpec("ghz_clusters_random", {"num_qubits": num_qubits, "block_size": block_size, "depth": 200, "seed": 4}),
         CaseSpec("random_clifford", {"num_qubits": num_qubits, "depth": 200, "seed": 5}),
     ]
@@ -63,6 +65,8 @@ def main():
     ap.add_argument("--sv-ampops-per-sec", type=float, default=None)
     ap.add_argument("--log-level", type=str, default="INFO")
     ap.add_argument("--heartbeat-sec", type=float, default=10.0)
+    ap.add_argument("--non-disjoint-qubits", type=int, default=None,
+                    help="If set, cap num_qubits for circuits that are non-disjoint (bridges/global).")
     args = ap.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -72,6 +76,24 @@ def main():
     for nq in args.num_qubits:
         for bs in args.block_size:
             specs.extend(default_suite(nq, bs))
+
+    # Optionally reduce qubits for non-disjoint circuits
+    if args.non_disjoint_qubits is not None:
+        reduced_specs: List[CaseSpec] = []
+        for spec in specs:
+            params = dict(spec.params)
+            kind = spec.kind
+            non_disjoint = False
+            if kind.startswith("stitched_") and params.get("neighbor_bridge_layers", 0) > 0:
+                non_disjoint = True
+            if kind == "clifford_plus_rot" and params.get("pair_scope", "global") != "block":
+                non_disjoint = True
+            if kind == "random_clifford":
+                non_disjoint = True
+            if non_disjoint and "num_qubits" in params:
+                params["num_qubits"] = min(int(params["num_qubits"]), int(args.non_disjoint_qubits))
+            reduced_specs.append(CaseSpec(kind, params))
+        specs = reduced_specs
 
     t0 = time.time()
     last = t0
@@ -83,20 +105,21 @@ def main():
             logging.info("[heartbeat] progress %d/%d, elapsed %ds", i, len(specs), int(now - t0))
             last = now
 
-    # Summarize
+    # Write summary index
     index = []
     for fn in sorted(os.listdir(args.out_dir)):
         if not fn.endswith(".json"): continue
         with open(os.path.join(args.out_dir, fn), "r") as f:
             data = json.load(f)
         q_wall = float(data.get("quasar", {}).get("wall_elapsed_s", 0.0) or 0.0)
-        index.append({
+        entry = {
             "file": fn,
             "kind": data.get("case", {}).get("kind"),
             "params": data.get("case", {}).get("params", {}),
             "quasar_wall_s": q_wall,
             "baselines": data.get("baselines", {}).get("entries", []),
-        })
+        }
+        index.append(entry)
     with open(os.path.join(args.out_dir, "index.json"), "w") as f:
         json.dump(index, f, indent=2)
     logging.info("Suite done. Wrote %s", os.path.join(args.out_dir, "index.json"))
