@@ -4,10 +4,9 @@ from typing import Optional, Any
 import numpy as np
 
 def estimate_sv_bytes(n_qubits: int) -> int:
-    # complex128 amplitudes
     if n_qubits <= 0:
         return 0
-    return 16 * (1 << n_qubits)
+    return 16 * (1 << n_qubits)  # complex128
 
 class StatevectorBackend:
     def __init__(self) -> None:
@@ -29,10 +28,8 @@ class StatevectorBackend:
                 sv = result.get_statevector(tqc)
                 return np.asarray(sv, dtype=np.complex128)
             else:
-                # Fallback to qiskit statevector calculation
                 from qiskit.quantum_info import Statevector
                 sv = Statevector.from_instruction(circuit)
                 return np.asarray(sv.data, dtype=np.complex128)
-        except Exception as e:
-            # Last resort: return None
+        except Exception:
             return None

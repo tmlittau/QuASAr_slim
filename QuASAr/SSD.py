@@ -4,10 +4,13 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Any, Optional
 import hashlib
 
-from qiskit import QuantumCircuit
-
+try:
+    from qiskit import QuantumCircuit
+except Exception:  # pragma: no cover
+    QuantumCircuit = Any  # type: ignore
 
 def _fingerprint(text: str) -> str:
+    import hashlib
     return hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
 
 @dataclass
@@ -24,7 +27,7 @@ class PartitionNode:
 
     def compute_fingerprint(self) -> str:
         try:
-            qasm = self.circuit.qasm()  # deprecated in new qiskit, but fine here
+            qasm = self.circuit.qasm()  # deprecated in some qiskit versions
         except Exception:
             qasm = str(self.circuit)
         return _fingerprint(qasm + str(self.qubits))
@@ -35,8 +38,7 @@ class PartitionNode:
         d["num_qubits"] = int(self.circuit.num_qubits) if hasattr(self.circuit, "num_qubits") else len(self.qubits)
         d["depth"] = int(self.circuit.depth()) if hasattr(self.circuit, "depth") else None
         d["backend"] = self.backend
-        # Avoid dumping the full circuit object
-        d.pop("circuit", None)
+        d.pop("circuit", None)  # don't serialize full circuit
         return d
 
 @dataclass
@@ -45,10 +47,7 @@ class SSD:
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "meta": dict(self.meta),
-            "partitions": [p.to_dict() for p in self.partitions],
-        }
+        return {"meta": dict(self.meta), "partitions": [p.to_dict() for p in self.partitions]}
 
     def add(self, node: PartitionNode) -> None:
         self.partitions.append(node)

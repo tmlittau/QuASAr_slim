@@ -16,25 +16,21 @@ def ghz(n: int) -> QuantumCircuit:
 def ghz_clusters_random(num_qubits: int, block_size: int = 8, depth: int = 200, seed: int = 1) -> QuantumCircuit:
     rng = np.random.default_rng(seed)
     qc = QuantumCircuit(num_qubits)
-    # GHZ blocks
     for start in range(0, num_qubits, block_size):
         end = min(num_qubits, start + block_size)
         sub = ghz(end - start)
         qc.compose(sub, qubits=list(range(start, end)), inplace=True)
-    # block-local random layers
     oneq = ["h","rx","ry","rz","s","sdg","x","z"]
     twoq = ["cx","cz","swap","rzz"]
     for _ in range(depth):
         for start in range(0, num_qubits, block_size):
             end = min(num_qubits, start + block_size)
-            # single-qubit
             for q in range(start, end):
                 g = rng.choice(oneq)
                 if g in {"rx","ry","rz"}:
                     getattr(qc, g)(float(rng.uniform(0, 2*np.pi)), q)
                 else:
                     getattr(qc, g)(q)
-            # pairwise two-qubit within block
             block = list(range(start, end))
             rng.shuffle(block)
             for a, b in zip(block[::2], block[1::2]):

@@ -4,7 +4,6 @@ from typing import Any, Optional
 import numpy as np
 
 def dd_to_statevector(dd_source: Any) -> Optional[np.ndarray]:
-    """Best-effort: if dd_source is a circuit, simulate with ddsim to extract a statevector."""
     try:
         import mqt.ddsim as ddsim  # type: ignore
         sim = ddsim.DDSIMProvider().get_backend('qasm_simulator')

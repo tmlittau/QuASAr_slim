@@ -15,8 +15,7 @@ class DecisionDiagramBackend:
         try:
             import mqt.ddsim as ddsim  # type: ignore
             sim = ddsim.DDSIMProvider().get_backend('qasm_simulator')
-            job = sim.run(circuit, shots=0)  # no shots -> statevector
-            # Some versions return 'statevector' in result.data()
+            job = sim.run(circuit, shots=0)
             res = job.result()
             if hasattr(res, "get_statevector"):
                 sv = res.get_statevector(circuit)

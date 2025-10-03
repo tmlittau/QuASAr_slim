@@ -4,13 +4,12 @@ from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from .SSD import SSD, PartitionNode
 
-from qiskit import QuantumCircuit
+try:
+    from qiskit import QuantumCircuit
+except Exception:
+    QuantumCircuit = Any  # type: ignore
 
-
-CLIFFORD = {
-    "i","x","y","z","h","s","sdg","cx","cz","swap"
-}
-
+CLIFFORD = {"i","x","y","z","h","s","sdg","cx","cz","swap"}
 ROTATION_GATES = {"rx","ry","rz","rxx","ryy","rzz","crx","cry","crz","rzx"}
 
 @dataclass
@@ -40,7 +39,6 @@ def _union_find_components(circ: QuantumCircuit) -> List[List[int]]:
             parent[rb] = ra
             rank[ra] += 1
 
-    # connect qubits that share any multi-qubit gate
     for inst, qargs, _ in circ.data:
         qubits = [circ.find_bit(q).index for q in qargs]
         if len(qubits) > 1:
@@ -48,7 +46,6 @@ def _union_find_components(circ: QuantumCircuit) -> List[List[int]]:
             for q in qubits[1:]:
                 union(base, q)
 
-    # components
     comp_map: Dict[int, List[int]] = {}
     for q in range(n):
         r = find(q)
@@ -56,7 +53,6 @@ def _union_find_components(circ: QuantumCircuit) -> List[List[int]]:
     return list(comp_map.values())
 
 def _extract_subcircuit(circ: QuantumCircuit, qubit_subset: List[int]) -> QuantumCircuit:
-    # preserve order; remap to local indices [0..k-1]
     subset_sorted = sorted(qubit_subset)
     mapping = {g: i for i, g in enumerate(subset_sorted)}
     sub = QuantumCircuit(len(subset_sorted))

@@ -20,18 +20,15 @@ def _is_supported(inst) -> bool:
     return name in CLIFFORD
 
 def _qiskit_clifford_statevector(circuit: Any) -> np.ndarray:
-    # For now: use qiskit's Statevector for Clifford circuits (fast enough and robust).
     from qiskit.quantum_info import Statevector
     sv = Statevector.from_instruction(circuit)
     return np.asarray(sv.data, dtype=np.complex128)
 
 class TableauBackend:
     def run(self, circuit: Any) -> Optional[np.ndarray]:
-        # If the circuit contains only supported Clifford gates, return its statevector via qiskit
         try:
             for inst, _, _ in circuit.data:
                 if not _is_supported(inst):
-                    # Not strictly Clifford -> refuse
                     return None
             return _qiskit_clifford_statevector(circuit)
         except Exception:
