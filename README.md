@@ -54,3 +54,29 @@ python run_baselines.py --kind ghz_clusters_random --num-qubits 64 --block-size 
 python plot_results.py --mode baselines --input baselines.json --out baselines.png
 ```
 Labels marked `(est)` use the theoretical time estimate; `(fail)` had no time estimate.
+
+
+## Compare QuASAr vs baselines (wall clock)
+
+`run_all.py` writes the QuASAr wall time (`execution.meta.wall_elapsed_s`). Combine that with baselines:
+
+```bash
+python run_all.py --out result.json
+python run_baselines.py --which sv,dd,tableau --out baselines.json
+
+# Provide both files to the compare plot (use 'SSD|BASELINES' shorthand)
+python plot_results.py --mode compare --input "result.json|baselines.json" --out compare.png
+```
+
+
+## Benchmark suite
+
+Run a small suite inspired by stitched‑disjoint and Clifford+rotations (parametrized):
+
+```bash
+python run_suite.py --out-dir suite_out --num-qubits 64 96 --block-size 8   --max-ram-gb 64 --sv-ampops-per-sec 5e9 --log-level INFO
+```
+
+This writes one JSON per case plus `suite_out/index.json` summarizing:
+- QuASAr wall time (parallel partitions),
+- Baseline whole-circuit results (measured or `(est)` with memory/time estimates).

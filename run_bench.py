@@ -5,26 +5,38 @@ from QuASAr.analyzer import analyze
 from QuASAr.planner import plan, execute, PlannerConfig
 import benchmark_circuits as bench
 
-def load_circuit(kind: str, **kwargs):
-    if kind == "ghz_clusters_random":
-        return bench.ghz_clusters_random(**kwargs)
-    if kind == "random_clifford":
-        return bench.random_clifford(**kwargs)
-    raise ValueError(f"unknown circuit kind '{kind}'")
-
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--kind", type=str, default="ghz_clusters_random")
+    p.add_argument("--kind", type=str, default="ghz_clusters_random",
+                   choices=list(bench.CIRCUIT_REGISTRY.keys()))
     p.add_argument("--num-qubits", type=int, default=64)
     p.add_argument("--block-size", type=int, default=8)
     p.add_argument("--depth", type=int, default=200)
+    p.add_argument("--depth-pre", type=int, default=100)
+    p.add_argument("--depth-post", type=int, default=100)
+    p.add_argument("--qft-bandwidth", type=int, default=3)
+    p.add_argument("--neighbor-bridge-layers", type=int, default=0)
+    p.add_argument("--rot-prob", type=float, default=0.2)
+    p.add_argument("--angle-scale", type=float, default=0.1)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-ram-gb", type=float, default=64.0)
     p.add_argument("--prefer-dd", action="store_true")
     p.add_argument("--out", type=str, default="result.json")
     args = p.parse_args()
 
-    circ = load_circuit(args.kind, num_qubits=args.num_qubits, block_size=args.block_size, depth=args.depth, seed=args.seed)
+    kw = dict(num_qubits=args.num_qubits, seed=args.seed)
+    if "stitched" in args.kind:
+        kw.update(block_size=args.block_size,
+                  depth_pre=args.depth_pre, depth_post=args.depth_post,
+                  qft_bandwidth=args.qft_bandwidth, neighbor_bridge_layers=args.neighbor_bridge_layers)
+    elif args.kind == "ghz_clusters_random":
+        kw.update(block_size=args.block_size, depth=args.depth)
+    elif args.kind == "random_clifford":
+        kw.update(depth=args.depth)
+    elif args.kind == "clifford_plus_rot":
+        kw.update(depth=args.depth, rot_prob=args.rot_prob, angle_scale=args.angle_scale)
+
+    circ = bench.build(args.kind, **kw)
     analysis = analyze(circ)
     cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, prefer_dd=args.prefer_dd)
     ssd = plan(analysis.ssd, cfg)

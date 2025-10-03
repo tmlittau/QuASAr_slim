@@ -66,13 +66,71 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--mode", choices=["ssd","baselines"], required=True)
+    ap.add_argument("--mode", choices=["ssd","baselines","compare"], required=True)
     args = ap.parse_args()
     if args.mode == "ssd":
         plot_ssd(args.input, args.out)
-    else:
+    elif args.mode == "baselines":
         plot_baselines(args.input, args.out)
+    else:
+        # compare requires two inputs; reuse --input for baselines for backward compat
+        import sys
+        # Expect --ssd and --baselines via env-like extra args? We'll parse from known flags
+        # Simpler: overload --input to accept 'SSD_FILE|BASELINES_FILE'
+        if '|' in args.input:
+            ssd_file, bl_file = args.input.split('|', 1)
+            plot_compare(ssd_file.strip(), bl_file.strip(), args.out)
+        else:
+            print("compare mode expects --input 'SSD_FILE|BASELINES_FILE'", file=sys.stderr)
+            sys.exit(2)
     print(f"Wrote {args.out}")
 
 if __name__ == "__main__":
     main()
+
+
+def plot_compare(ssd_file: str, baselines_file: str, outfile: str) -> None:
+    # Load SSD (QuASAr) wall-clock time
+    with open(ssd_file, "r") as f:
+        ssd = json.load(f)
+    execp = ssd.get("execution", ssd)
+    wall = execp.get("meta", {}).get("wall_elapsed_s", None)
+    if wall is None:
+        # Fallback: max partition elapsed (upper bound on wall)
+        parts = execp.get("results", [])
+        wall = max([float(p.get("elapsed_s", 0.0)) for p in parts] + [0.0])
+
+    # Load baselines (measured or estimated)
+    with open(baselines_file, "r") as f:
+        bl = json.load(f)
+    entries = bl.get("entries", [])
+
+    labels = ["QuASAr"]
+    times = [float(wall)]
+
+    for e in entries:
+        if e.get("mode") != "whole":
+            continue  # compare against whole-circuit baselines only
+        label = e.get("which")
+        res = e.get("result", {})
+        if res.get("ok"):
+            labels.append(label)
+            times.append(float(res.get("elapsed_s", 0.0)))
+        else:
+            est = res.get("estimate", {})
+            t_est = est.get("time_est_sec")
+            if t_est is not None:
+                labels.append(label + " (est)")
+                times.append(float(t_est))
+            else:
+                labels.append(label + " (fail)")
+                times.append(0.0)
+
+    plt.figure()
+    plt.bar(labels, times)
+    plt.ylabel("Time (s)")
+    plt.title("QuASAr vs Baselines (wall clock)")
+    plt.xticks(rotation=20, ha="right")
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=150)
+    plt.close()

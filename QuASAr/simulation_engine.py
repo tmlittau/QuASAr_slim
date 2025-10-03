@@ -103,6 +103,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     hb = threading.Thread(target=heartbeat, daemon=True)
     hb.start()
 
+    t0 = time.time()
     from concurrent.futures import ThreadPoolExecutor, as_completed
     futures = []
     with ThreadPoolExecutor(max_workers=cfg.max_workers) as ex:
@@ -113,6 +114,8 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     done.set()
     hb.join(timeout=1.0)
 
+    wall = time.time() - t0
+
     with lock:
         results = [{"partition": pid, **st} for pid, st in sorted(statuses.items(), key=lambda kv: kv[0])]
-    return {"results": results, "meta": {"max_ram_gb": cfg.max_ram_gb, "max_workers": cfg.max_workers}}
+    return {"results": results, "meta": {"max_ram_gb": cfg.max_ram_gb, "max_workers": cfg.max_workers, "wall_elapsed_s": wall}}
