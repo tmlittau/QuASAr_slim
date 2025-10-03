@@ -15,18 +15,32 @@ def plot_baselines(infile: str, outfile: str) -> None:
     entries = data.get("entries", [])
     labels, times = [], []
     for e in entries:
+        label = e.get("which")
         if e.get("mode") == "whole":
             res = e.get("result", {})
-            labels.append(e.get("which"))
-            times.append(_safe_float(res.get("elapsed_s", 0.0)))
+            if res.get("ok"):
+                labels.append(label)
+                times.append(_safe_float(res.get("elapsed_s", 0.0)))
+            else:
+                est = res.get("estimate", {})
+                t_est = est.get("time_est_sec")
+                if t_est is not None:
+                    labels.append(label + " (est)")
+                    times.append(_safe_float(t_est, 0.0))
+                else:
+                    # no time estimate -> plot 0 and annotate via label
+                    labels.append(label + " (fail)")
+                    times.append(0.0)
         else:
-            labels.append(e.get("which") + " (per-part)")
+            # per-partition: still allowed but de-emphasize by labeling
+            labels.append(label + " (per-part)")
             times.append(_safe_float(e.get("elapsed_s", 0.0)))
     plt.figure()
     plt.bar(labels, times)
     plt.xlabel("Baseline")
-    plt.ylabel("Elapsed time (s)")
+    plt.ylabel("Time (s) [estimated when marked '(est)']")
     plt.title("Baseline runtimes")
+    plt.xticks(rotation=20, ha="right")
     plt.tight_layout()
     plt.savefig(outfile, dpi=150)
     plt.close()
