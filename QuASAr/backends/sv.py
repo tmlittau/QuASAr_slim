@@ -17,19 +17,25 @@ class StatevectorBackend:
         except Exception:
             self._aer = None
 
-    def run(self, circuit: Any) -> Optional[np.ndarray]:
+    def run(self, circuit: Any, initial_state: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
         try:
-            if self._aer is not None:
-                from qiskit_aer import Aer
-                from qiskit import transpile
-                backend = Aer.get_backend('aer_simulator_statevector')
-                tqc = transpile(circuit, backend)
-                result = backend.run(tqc).result()
-                sv = result.get_statevector(tqc)
-                return np.asarray(sv, dtype=np.complex128)
-            else:
-                from qiskit.quantum_info import Statevector
+            from qiskit.quantum_info import Statevector
+            if initial_state is None:
                 sv = Statevector.from_instruction(circuit)
-                return np.asarray(sv.data, dtype=np.complex128)
+            else:
+                sv = Statevector(initial_state)
+                sv = sv.evolve(circuit)
+            return np.asarray(sv.data, dtype=np.complex128)
         except Exception:
-            return None
+            try:
+                if self._aer is not None and initial_state is None:
+                    from qiskit_aer import Aer
+                    from qiskit import transpile
+                    backend = Aer.get_backend('aer_simulator_statevector')
+                    tqc = transpile(circuit, backend)
+                    result = backend.run(tqc).result()
+                    sv = result.get_statevector(tqc)
+                    return np.asarray(sv, dtype=np.complex128)
+            except Exception:
+                pass
+        return None

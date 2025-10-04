@@ -172,12 +172,56 @@ def clifford_plus_random_rotations(*, num_qubits: int, depth: int = 200,
                 getattr(qc, rng.choice(cliff2))(a, b)
     return qc
 
+# --- add helper to pair qubits locally (block scope) or globally ---
+def _pairing(order):
+    for a,b in zip(order[::2], order[1::2]):
+        yield a,b
+
+def _apply_random_clifford_layer(qc: QuantumCircuit, rng: np.random.Generator):
+    oneq = ["h","s","sdg","x","z"]
+    twoq = ["cx","cz","swap"]
+    n = qc.num_qubits
+    for q in range(n):
+        getattr(qc, rng.choice(oneq))(q)
+    order = list(range(n))
+    rng.shuffle(order)
+    for a,b in _pairing(order):
+        getattr(qc, rng.choice(twoq))(a,b)
+
+def _apply_rotation_tail_layer(qc: QuantumCircuit, rng: np.random.Generator, angle_scale: float):
+    n = qc.num_qubits
+    for q in range(n):
+        theta = float(rng.uniform(-angle_scale, angle_scale))
+        qc.rx(theta, q)
+    order = list(range(n))
+    rng.shuffle(order)
+    for a,b in _pairing(order):
+        qc.cz(a,b)
+
+# --- NEW: builder with a cutoff fraction ---
+def clifford_prefix_rot_tail(*, num_qubits: int, depth: int, cutoff: float,
+                             angle_scale: float = 0.1, seed: int = 1) -> QuantumCircuit:
+    """Build a circuit with a Clifford-only prefix of floor(cutoff*depth) layers
+    and a random-rotation tail of depth - prefix_layers layers."""
+    cutoff = max(0.0, min(1.0, float(cutoff)))
+    depth = int(depth)
+    rng = np.random.default_rng(int(seed))
+    qc = QuantumCircuit(int(num_qubits))
+    d_pre = int(round(depth * cutoff))
+    d_tail = max(0, depth - d_pre)
+    for _ in range(d_pre):
+        _apply_random_clifford_layer(qc, rng)
+    for _ in range(d_tail):
+        _apply_rotation_tail_layer(qc, rng, angle_scale)
+    return qc
+
 CIRCUIT_REGISTRY = {
     "ghz_clusters_random": ghz_clusters_random,
     "random_clifford": random_clifford,
     "stitched_rand_bandedqft_rand": stitched_disjoint_rand_bandedqft_rand,
     "stitched_diag_bandedqft_diag": stitched_disjoint_diag_bandedqft_diag,
     "clifford_plus_rot": clifford_plus_random_rotations,
+    "clifford_prefix_rot_tail": clifford_prefix_rot_tail,
 }
 
 def build(kind: str, **kwargs) -> QuantumCircuit:

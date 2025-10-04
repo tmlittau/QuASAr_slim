@@ -23,6 +23,8 @@ def main():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--max-ram-gb", type=float, default=64.0)
     p.add_argument("--prefer-dd", action="store_true")
+    p.add_argument("--conv-factor", type=float, default=64.0, help="Conversion cost factor (amp-ops scale)")
+    p.add_argument("--twoq-factor", type=float, default=4.0, help="SV cost weight for 2-qubit gates")
     p.add_argument("--out", type=str, default="result.json")
     args = p.parse_args()
 
@@ -41,7 +43,8 @@ def main():
 
     circ = bench.build(args.kind, **kw)
     analysis = analyze(circ)
-    cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, prefer_dd=args.prefer_dd)
+    cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, prefer_dd=args.prefer_dd,
+                        conv_amp_ops_factor=args.conv_factor, sv_twoq_factor=args.twoq_factor)
     ssd = plan(analysis.ssd, cfg)
     from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
     exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=args.max_ram_gb))

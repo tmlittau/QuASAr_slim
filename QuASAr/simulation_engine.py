@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 @dataclass
 class ExecutionConfig:
     max_ram_gb: float = 64.0
-    max_workers: int = 0           # 0 => auto
+    max_workers: int = 0
     heartbeat_sec: float = 5.0
     stuck_warn_sec: float = 60.0
 
@@ -34,12 +34,25 @@ class _MemGovernor:
                 self._avail = self.cap
             self._cv.notify_all()
 
-def _backend_runner(name: str, circ):
+def _backend_runner(name: str, circ, initial_state):
     if name == "tableau":
         return TableauBackend().run(circ)
     if name == "dd":
         return DecisionDiagramBackend().run(circ)
-    return StatevectorBackend().run(circ)
+    return StatevectorBackend().run(circ, initial_state=initial_state)
+
+def _group_chains(ssd: SSD):
+    chains = {}
+    for node in ssd.partitions:
+        meta = node.meta or {}
+        chain_id = meta.get("chain_id", f"chain_{node.id}")
+        seq = int(meta.get("seq_index", 0))
+        node.meta["chain_id"] = chain_id
+        node.meta["seq_index"] = seq
+        chains.setdefault(chain_id, []).append(node)
+    for cid in chains:
+        chains[cid].sort(key=lambda n: int(n.meta.get("seq_index", 0)))
+    return chains
 
 def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
@@ -56,66 +69,60 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     lock = threading.Lock()
     done = threading.Event()
 
-    def run_node(node: PartitionNode):
-        pid = node.id
-        need = 0
-        if (node.backend or "sv") == "sv":
-            need = estimate_sv_bytes(int(node.metrics.get("num_qubits", 0)))
-            if need > cap_bytes:
-                with lock:
-                    statuses[pid] = {"status":"skipped","reason":"sv_exceeds_cap","backend":node.backend,"elapsed_s":0.0}
-                return
-            memgov.acquire(need)
-        start = time.time()
-        with lock:
-            statuses[pid] = {"status":"running","backend":node.backend,"start_ts":start}
-        try:
-            out = _backend_runner(node.backend or "sv", node.circuit)
-            elapsed = time.time()-start
-            with lock:
-                statuses[pid] = {"status":"ok" if out is not None else "failed",
-                                 "backend":node.backend,"elapsed_s":elapsed,
-                                 "statevector_len": None if out is None else len(out)}
-        except Exception as e:
-            elapsed = time.time()-start
-            with lock:
-                statuses[pid] = {"status":"error","backend":node.backend,"elapsed_s":elapsed,"error":f"{type(e).__name__}: {e}"}
-        finally:
-            if need > 0:
-                memgov.release(need)
+    chains = _group_chains(ssd)
 
-    # heartbeat
+    def run_chain(cid: str, nodes: List[PartitionNode]):
+        init_state = None
+        start_chain = time.time()
+        for node in nodes:
+            pid = node.id
+            n = int(node.metrics.get("num_qubits", 0))
+            need = estimate_sv_bytes(n)
+            memgov.acquire(need)
+            start = time.time()
+            with lock:
+                statuses[pid] = {"status":"running","backend":node.backend,"start_ts":start,"chain_id":cid,"seq_index":node.meta.get("seq_index",0)}
+            try:
+                out = _backend_runner(node.backend or "sv", node.circuit, init_state if (node.backend or "sv")=="sv" else None)
+                elapsed = time.time()-start
+                with lock:
+                    statuses[pid] = {"status":"ok" if out is not None else "failed",
+                                     "backend":node.backend,"elapsed_s":elapsed,
+                                     "statevector_len": None if out is None else len(out),
+                                     "chain_id": cid, "seq_index": node.meta.get("seq_index",0)}
+                init_state = out
+            except Exception as e:
+                elapsed = time.time()-start
+                with lock:
+                    statuses[pid] = {"status":"error","backend":node.backend,"elapsed_s":elapsed,"error":f"{type(e).__name__}: {e}",
+                                     "chain_id": cid, "seq_index": node.meta.get("seq_index",0)}
+                init_state = None
+            finally:
+                memgov.release(need)
+        statuses[f"chain_{cid}"] = {"status":"done","chain_elapsed_s": time.time()-start_chain}
+
     def heartbeat():
-        last_warn = {}
         while not done.is_set():
             time.sleep(cfg.heartbeat_sec)
             with lock:
-                running = [(pid, s) for pid, s in statuses.items() if s.get("status")=="running"]
+                running = [(pid, s) for pid, s in statuses.items() if isinstance(pid, int) and s.get("status")=="running"]
             if running:
-                msg = " | ".join([f"p{pid}-{s.get('backend')} {int(time.time()-s.get('start_ts',0))}s" for pid,s in running])
+                msg = " | ".join([f"p{pid}-{s.get('backend')} {int(time.time()-s.get('start_ts',0))}s (cid={s.get('chain_id')},seq={s.get('seq_index')})" for pid,s in running])
                 LOGGER.info("[heartbeat] %s", msg)
-                now = time.time()
-                for pid, s in running:
-                    if now - s.get("start_ts", now) > cfg.stuck_warn_sec and last_warn.get(pid, 0) + cfg.stuck_warn_sec <= now:
-                        LOGGER.warning("partition %d running > %.0fs", pid, cfg.stuck_warn_sec)
-                        last_warn[pid] = now
 
     hb = threading.Thread(target=heartbeat, daemon=True)
     hb.start()
 
     t0 = time.time()
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    futures = []
+    from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=cfg.max_workers) as ex:
-        for node in ssd.partitions:
-            futures.append(ex.submit(run_node, node))
-        for f in as_completed(futures):
-            _ = f.result()
+        futures = [ex.submit(run_chain, cid, nodes) for cid, nodes in chains.items()]
+        for f in futures:
+            f.result()
     done.set()
     hb.join(timeout=1.0)
 
     wall = time.time() - t0
-
     with lock:
-        results = [{"partition": pid, **st} for pid, st in sorted(statuses.items(), key=lambda kv: kv[0])]
+        results = [{"partition": pid, **st} for pid, st in sorted(((k,v) for k,v in statuses.items() if isinstance(k,int)), key=lambda kv: kv[0])]
     return {"results": results, "meta": {"max_ram_gb": cfg.max_ram_gb, "max_workers": cfg.max_workers, "wall_elapsed_s": wall}}
