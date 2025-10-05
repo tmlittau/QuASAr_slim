@@ -43,6 +43,42 @@ def test_hybrid_prefix_metrics():
     assert tail.metrics["is_clifford"] is False
     assert tail.metrics["clifford_gates"] == 1
 
+
+def test_hybrid_partition_qubits_are_local():
+    pytest.importorskip("qiskit")
+    from qiskit import QuantumCircuit
+
+    qc = QuantumCircuit(3)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.cx(1, 2)
+    qc.h(2)
+    qc.rz(0.5, 0)
+    qc.cz(1, 2)
+
+    analysis = analyze(qc)
+    cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=0.0)
+    planned = plan(analysis.ssd, cfg)
+
+    assert len(planned.partitions) == 2
+
+    for partition in planned.partitions:
+        circuit = partition.circuit
+        meta = getattr(circuit, "metadata", {}) or {}
+        mapping = meta.get("mapping")
+
+        assert mapping is not None, "mapping metadata should be preserved for hybrid partitions"
+        assert set(mapping.keys()) == set(partition.qubits)
+        assert sorted(mapping.values()) == list(range(circuit.num_qubits))
+
+        # Ensure all qubits in the circuit come from its own registers (no foreign qubits)
+        assert len(circuit.qregs) == 1
+        assert tuple(circuit.qregs[0]) == circuit.qubits
+
+        # Ensure the mapping points to the circuit's qubit tuple
+        for _, local_idx in mapping.items():
+            assert circuit.qubits[local_idx] in circuit.qubits
+
 def build_clifford_tail(n=10, depth_cliff=50, depth_tail=5, seed=7):
     pytest.importorskip("qiskit")
     from benchmarks.hybrid import random_clifford
