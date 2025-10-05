@@ -36,8 +36,7 @@ def _load_cases(suite_dir: str) -> List[Dict[str, Any]]:
     cases.sort(key=_key)
     return cases
 
-def _extract_hybrid_segments(exec_payload: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    results = exec_payload.get("results", [])
+def _extract_hybrid_segments(results: List[Dict[str, Any]]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
     chains = {}
     for r in results:
         cid = r.get("chain_id")
@@ -50,15 +49,52 @@ def _extract_hybrid_segments(exec_payload: Dict[str, Any]) -> Optional[Tuple[Dic
             return a, b
     return None
 
+def _flatten_baseline_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Bring nested baseline result payloads into a flat dictionary."""
+    if not isinstance(entry, dict):
+        return {}
+    flat = dict(entry)
+    res = flat.pop("result", None)
+    if isinstance(res, dict):
+        # Only copy keys we don't already have (prefer explicit fields such as mode/which).
+        for key, val in res.items():
+            flat.setdefault(key, val)
+    if "method" not in flat and "which" in flat:
+        flat["method"] = flat.get("which")
+    if "scope" not in flat and "mode" in flat:
+        flat["scope"] = flat.get("mode")
+    if "wall_s_measured" not in flat and "elapsed_s" in flat:
+        try:
+            flat["wall_s_measured"] = float(flat.get("elapsed_s"))
+        except Exception:
+            pass
+    return flat
+
+
+def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
+    for key in ("wall_s_measured", "wall_s_estimated", "elapsed_s", "time_est_sec"):
+        if key in payload and payload[key] is not None:
+            try:
+                return float(payload[key])
+            except Exception:
+                continue
+    return None
+
+
 def _best_whole_baseline(baselines: Dict[str, Any]) -> Optional[Tuple[str, float]]:
     entries = baselines.get("entries", []) if isinstance(baselines, dict) else []
     if not isinstance(entries, list):
         entries = []
+    entries = [_flatten_baseline_entry(e) for e in entries]
+    if not isinstance(entries, list):
+        entries = []
     def is_whole(e: Dict[str, Any]) -> bool:
-        if e.get("ok") is False:
-            return False
         if e.get("scope") in ("whole", "global", "circuit"):
             return True
+        if (e.get("mode") or e.get("scope")) == "whole":
+            return True
+        if e.get("ok") is False:
+            return False
         if e.get("per_partition") is False:
             return True
         if "partition_id" not in e and "chain_id" not in e:
@@ -68,12 +104,10 @@ def _best_whole_baseline(baselines: Dict[str, Any]) -> Optional[Tuple[str, float
     for e in entries:
         if not is_whole(e):
             continue
-        t = e.get("wall_s_measured")
-        if t is None:
-            t = e.get("wall_s_estimated")
+        t = _pick_elapsed(e)
         if t is None:
             continue
-        m = (e.get("method") or e.get("name") or "sv").lower()
+        m = (e.get("method") or e.get("which") or e.get("backend") or e.get("name") or "sv").lower()
         if best is None or float(t) < best[1]:
             best = (m, float(t))
     if best is not None:
@@ -81,12 +115,10 @@ def _best_whole_baseline(baselines: Dict[str, Any]) -> Optional[Tuple[str, float
     for e in entries:
         if e.get("ok") is False:
             continue
-        t = e.get("wall_s_measured")
-        if t is None:
-            t = e.get("wall_s_estimated")
+        t = _pick_elapsed(e)
         if t is None:
             continue
-        m = (e.get("method") or e.get("name") or "sv").lower()
+        m = (e.get("method") or e.get("which") or e.get("backend") or e.get("name") or "sv").lower()
         if best is None or float(t) < best[1]:
             best = (m, float(t))
     return best
@@ -115,7 +147,7 @@ def _estimate_conversion_time(prefix_node: Dict[str, Any], tail_node: Dict[str, 
     norms = _parse_reason_norms(prefix_node.get("planner_reason", ""))
     sv_tail_norm = norms.get("tail")
     conv_norm = norms.get("conv")
-    tail_elapsed = float(tail_node.get("elapsed_s", 0.0) or 0.0)
+    tail_elapsed = _pick_elapsed(tail_node) or 0.0
     if sv_tail_norm is None or conv_norm is None or tail_elapsed <= 0.0:
         return 0.0
     amps = float(1 << int(n_qubits))
@@ -144,13 +176,43 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
         nq_from_metrics = int(metrics.get("num_qubits", n_qubits))
         n_qubits = nq_from_metrics
 
-        segs = _extract_hybrid_segments(exec_payload)
+        # Merge planner metadata into execution results so we can recover reasons.
+        part_info: Dict[int, Dict[str, Any]] = {}
+        ssd_info = (analysis or {}).get("ssd", {}) or {}
+        for part in ssd_info.get("partitions", []) or []:
+            try:
+                pid = int(part.get("id"))
+            except Exception:
+                continue
+            info: Dict[str, Any] = {}
+            meta = part.get("meta") or {}
+            if isinstance(meta, dict):
+                info.update(meta)
+            info.setdefault("backend", part.get("backend"))
+            info.setdefault("num_qubits", part.get("num_qubits"))
+            part_info[pid] = info
+
+        exec_results: List[Dict[str, Any]] = []
+        for res in exec_payload.get("results", []) or []:
+            r = dict(res)
+            pid = r.get("partition")
+            if pid is not None:
+                try:
+                    extra = part_info.get(int(pid))
+                except Exception:
+                    extra = None
+                if extra:
+                    for key, val in extra.items():
+                        r.setdefault(key, val)
+            exec_results.append(r)
+
+        segs = _extract_hybrid_segments(exec_results)
         if segs is None:
-            res = exec_payload.get("results", [])
+            res = exec_results
             if res:
                 r = min(res, key=lambda x: x.get("seq_index", 0))
                 b = (r.get("backend") or "sv").lower()
-                t = float(r.get("elapsed_s", 0.0) or 0.0)
+                t = _pick_elapsed(r) or 0.0
                 if b == "tableau":
                     t_tab.append(t); t_conv.append(0.0); t_tail.append(0.0); tail_methods.append("sv")
                     totals.append(t)
@@ -162,8 +224,8 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
                 totals.append(0.0)
         else:
             pre, tail = segs
-            pre_t = float(pre.get("elapsed_s", 0.0) or 0.0)
-            tail_t = float(tail.get("elapsed_s", 0.0) or 0.0)
+            pre_t = _pick_elapsed(pre) or 0.0
+            tail_t = _pick_elapsed(tail) or 0.0
             tail_b = (tail.get("backend") or "sv").lower()
             conv_t = _estimate_conversion_time(pre, tail, n_qubits)
             tab_t = max(pre_t - conv_t, 0.0)
