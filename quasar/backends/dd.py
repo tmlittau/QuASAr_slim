@@ -1,20 +1,63 @@
-
 from __future__ import annotations
-from typing import Optional, Any, Callable
+
+import logging
+from typing import Any, Callable, Optional
+
+import numpy as np
 
 try:  # pragma: no cover - optional dependency
-    import numpy as np
-except ModuleNotFoundError:  # pragma: no cover
-    np = None  # type: ignore
+    from mqt.core import QuantumComputation
+    import mqt.ddsim as ddsim
+except Exception:  # pragma: no cover - environment without DDSIM
+    QuantumComputation = None  # type: ignore
+    ddsim = None  # type: ignore
+
+from ._partition import Operation, extract_operations
+
+LOGGER = logging.getLogger(__name__)
+
 
 def ddsim_available() -> bool:
-    try:
-        import mqt.ddsim  # type: ignore
-        return True
-    except Exception:
-        return False
+    return ddsim is not None
+
+
+def _apply_operation(qc: QuantumComputation, op: Operation) -> None:
+    name = op.name
+    qubits = op.qubits
+    params = op.params
+
+    if name in {"i", "id"}:
+        return
+    if name in {"u", "u3"}:
+        theta, phi, lam = (params + (0.0, 0.0, 0.0))[:3]
+        qc.u(theta, phi, lam, *qubits)
+        return
+    if name == "u2":
+        phi, lam = (params + (0.0, 0.0))[:2]
+        qc.u2(phi, lam, *qubits)
+        return
+    if name in {"p", "u1"}:
+        qc.p(params[0] if params else 0.0, *qubits)
+        return
+    if name in {"rx", "ry", "rz"}:
+        getattr(qc, name)(params[0] if params else 0.0, *qubits)
+        return
+    if name == "cp":
+        qc.cp(params[0] if params else 0.0, *qubits)
+        return
+    if name == "rzz":
+        qc.rzz(params[0] if params else 0.0, *qubits)
+        return
+
+    method = getattr(qc, name, None)
+    if method is None:
+        raise NotImplementedError(f"Unsupported gate '{op.name}' for decision diagram backend")
+    method(*qubits)
+
 
 class DecisionDiagramBackend:
+    """Simulate circuit partitions with MQT's decision diagram backend."""
+
     def run(
         self,
         circuit: Any,
@@ -24,101 +67,53 @@ class DecisionDiagramBackend:
         want_statevector: bool = False,
         batch_size: int = 500,
     ) -> Optional[Any]:
-        """Simulate *circuit* with DDSIM and return a decision diagram or statevector."""
+        del batch_size
 
-        del batch_size  # Only kept for backwards compatibility.
-
-        if np is None:
+        if QuantumComputation is None or ddsim is None:
+            LOGGER.warning("DDSIM is not available; decision diagram backend cannot execute partition.")
             return None
 
-        def _emit(count: int) -> None:
-            if progress_cb is not None and count:
-                progress_cb(int(count))
-
-        try:
-            import mqt.ddsim as ddsim  # type: ignore
-            from mqt.core import load  # type: ignore
-            from mqt.core.dd import DDPackage  # type: ignore
-        except Exception:
+        num_qubits, ops = extract_operations(circuit)
+        if num_qubits == 0:
             return None
 
-        prepared_circuit = circuit
-        total_ops = 0
-
-        qiskit_qc: Any = None
-        try:
-            from qiskit import QuantumCircuit  # type: ignore
-
-            if isinstance(circuit, QuantumCircuit):
-                qiskit_qc = circuit
-        except Exception:
-            QuantumCircuit = None  # type: ignore
+        partition_id = getattr(circuit, "partition_id", "unknown")
+        LOGGER.debug(
+            "Simulating partition %s on decision diagram backend with %d qubits and %d ops.",
+            partition_id,
+            num_qubits,
+            len(ops),
+        )
 
         if initial_state is not None:
-            init_vec = np.asarray(initial_state, dtype=np.complex128).ravel()
-            need_fallback = False
-            target_qubits = None
+            vec = np.asarray(initial_state, dtype=np.complex128).ravel()
+            expected = 1 << num_qubits
+            if vec.size != expected:
+                raise ValueError(
+                    f"Initial state has dimension {vec.size}, expected {expected} for {num_qubits} qubits.")
+            raise NotImplementedError(
+                "Custom initial states are not supported by the decision diagram backend"
+            )
 
-            if qiskit_qc is not None:
-                target_qubits = int(qiskit_qc.num_qubits)
-                if target_qubits <= 0:
-                    return None
-                expected = 1 << target_qubits
-                if init_vec.size != expected:
-                    raise ValueError(
-                        f"Initial state has dimension {init_vec.size}, expected {expected} for {target_qubits} qubits."
-                    )
-                try:
-                    from qiskit.circuit.library import StatePreparation  # type: ignore
+        qc = QuantumComputation(num_qubits)
+        for op in ops:
+            _apply_operation(qc, op)
 
-                    prep = QuantumCircuit(target_qubits)
-                    prep.append(StatePreparation(init_vec, normalize=True), range(target_qubits))
-                    prepared_circuit = prep.compose(qiskit_qc)
-                except Exception:
-                    need_fallback = True
-            else:
-                need_fallback = True
-
-            if need_fallback:
-                try:
-                    from .sv import StatevectorBackend  # type: ignore
-
-                    sv_backend = StatevectorBackend()
-                    sv = sv_backend.run(
-                        circuit,
-                        initial_state=init_vec,
-                        progress_cb=progress_cb,
-                        want_statevector=True,
-                    )
-                except Exception:
-                    sv = None
-
-                if sv is None:
-                    return None
-
-                vector = np.asarray(sv, dtype=np.complex128)
-                length = int(vector.size)
-                if length <= 0 or length & (length - 1):
-                    raise ValueError("Statevector length must be a power of two.")
-                num_qubits = length.bit_length() - 1
-                pkg = DDPackage(num_qubits)
-                dd = pkg.from_vector(vector)
-                return vector if want_statevector else dd
-
+        simulator = ddsim.CircuitSimulator(qc)
         try:
-            prepared_qc = load(prepared_circuit)
-            try:
-                total_ops = int(getattr(prepared_qc, "num_ops", 0))
-            except Exception:
-                total_ops = len(getattr(prepared_circuit, "data", []))
-
-            simulator = ddsim.CircuitSimulator(prepared_qc)
             simulator.simulate(0)
-            dd = simulator.get_constructed_dd()
-            _emit(total_ops or 1)
-
-            if want_statevector:
-                return np.array(dd.get_vector(), dtype=np.complex128, copy=True)
-            return dd
         except Exception:
+            LOGGER.exception("DDSIM failed while executing the partition.")
             return None
+
+        if progress_cb is not None:
+            progress_cb(max(1, len(ops)))
+
+        dd = simulator.get_constructed_dd()
+        if want_statevector:
+            try:
+                return np.array(dd.get_vector(), dtype=np.complex128)
+            except Exception:
+                LOGGER.exception("DDSIM did not provide a statevector representation.")
+                return None
+        return dd

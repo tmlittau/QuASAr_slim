@@ -1,162 +1,96 @@
 from __future__ import annotations
-from typing import Optional, Any, Callable, Sequence, Dict, Tuple, List
 
-try:  # pragma: no cover - optional dependency
-    import numpy as np
-except ModuleNotFoundError:  # pragma: no cover
-    np = None  # type: ignore
+import logging
+from typing import Any, Callable, Dict, Optional
 
-# --------------------------------------------------------------------------------------
-# Availability
-# --------------------------------------------------------------------------------------
+import numpy as np
+
+from ._partition import extract_operations
+
+LOGGER = logging.getLogger(__name__)
+
 
 def stim_available() -> bool:
     try:
         import stim  # type: ignore
+
         return True
     except Exception:
         return False
 
-# --------------------------------------------------------------------------------------
-# Gate set and mapping
-# --------------------------------------------------------------------------------------
 
-# Gates we treat as Clifford
-CLIFFORD = {"i","id","x","y","z","h","s","sdg","cx","cz","swap"}
-
-# Map lowercase names to Stim TableauSimulator method names.
-_STIM_ALIASES: Dict[str, str] = {
-    "x": "x",
-    "y": "y",
-    "z": "z",
-    "h": "h",
-    "s": "s",
-    "sdg": "s_dag",
-    "cx": "cx",
-    "cz": "cz",
-    "swap": "swap",
+_STIM_GATES: Dict[str, str] = {
+    "x": "X",
+    "y": "Y",
+    "z": "Z",
+    "h": "H",
+    "s": "S",
+    "sdg": "S_DAG",
+    "sx": "SQRT_X",
+    "sxdg": "SQRT_X_DAG",
+    "cx": "CX",
+    "cz": "CZ",
+    "swap": "SWAP",
 }
 
-def _is_supported(inst) -> bool:
-    try:
-        name = inst.name.lower()
-    except Exception:
-        return False
-    return name in CLIFFORD
-
-# --------------------------------------------------------------------------------------
-# Qiskit helpers (fallback / materialization)
-# --------------------------------------------------------------------------------------
-
-def _extract_ops_qiskit(circuit: Any) -> Tuple[int, List[Tuple[str, Tuple[int, ...]]]]:
-    """
-    Extract (n_qubits, ops) from a Qiskit QuantumCircuit.
-    Each op is ('name_lower', (q0, q1?)).
-    If a non-Clifford is found, return (n, []) to signal unsupported.
-    """
-    try:
-        qubits = list(circuit.qubits)
-        q2i = {q: i for i, q in enumerate(qubits)}
-        ops: List[Tuple[str, Tuple[int, ...]]] = []
-        for inst, qargs, _ in circuit.data:
-            name = inst.name.lower()
-            if name == "barrier":
-                continue
-            if not _is_supported(inst):
-                return len(qubits), []  # unsupported
-            idxs = tuple(q2i[q] for q in qargs)
-            ops.append((name, idxs))
-        return len(qubits), ops
-    except Exception:
-        return 0, []
-
-def _clifford_ops_to_statevector(n: int, ops: List[Tuple[str, Tuple[int, ...]]]) -> Optional[np.ndarray]:
-    """
-    Convert a Clifford defined by 'ops' on n qubits into a statevector without
-    simulating a full statevector time-evolution per gate.
-    Strategy: build a Qiskit Clifford and then Clifford->Statevector once.
-    """
-
-    if np is None:
-        return None
-    # We build a pure-Clifford circuit and then call Clifford.from_circuit (or Clifford(circuit))
-    from qiskit import QuantumCircuit
-    from qiskit.quantum_info import Clifford, Statevector
-
-    qc = QuantumCircuit(n)
-    for name, q in ops:
-        if name in ("i", "id"):
-            continue
-        getattr(qc, name)(*q)  # Qiskit has x,y,z,h,s,sdg,cx,cz,swap
-    try:
-        clf = Clifford.from_circuit(qc)  # preferred in modern Qiskit
-    except Exception:
-        clf = Clifford(qc)               # fallback for older versions
-    sv = Statevector.from_instruction(clf)
-    return np.asarray(sv.data, dtype=np.complex128)
-
-# --------------------------------------------------------------------------------------
-# Backend
-# --------------------------------------------------------------------------------------
 
 class TableauBackend:
+    """Simulate Clifford partitions using :mod:`stim`."""
+
     def run(
         self,
         circuit: Any,
         *,
         progress_cb: Optional[Callable[[int], None]] = None,
-        want_statevector: bool = False,   # <-- default False (only materialize when needed)
+        want_statevector: bool = False,
     ) -> Optional[np.ndarray]:
-        """
-        Simulate Clifford circuit as a stabilizer (Stim fast path if available).
-        - If a non-Clifford is present: return None (caller should pick another backend).
-        - If want_statevector=True: materialize |psi> at the end via Clifford->Statevector.
-        - progress_cb: optional; called occasionally with 'inc' processed gates (batched).
-        """
-        n, ops = _extract_ops_qiskit(circuit)
-        if n == 0 or not ops:
-            return None  # empty or unsupported
+        if not stim_available():
+            LOGGER.warning("Stim is not available; tableau backend cannot execute partition.")
+            return None
 
-        # progress batching (low overhead)
-        BATCH = 1000
+        import stim  # type: ignore
+
+        num_qubits, ops = extract_operations(circuit)
+        if num_qubits == 0:
+            return None
+
+        stim_circuit = stim.Circuit()
         processed = 0
 
-        if stim_available():
-            import stim  # type: ignore
-            sim = stim.TableauSimulator()
-            sim.set_num_qubits(n)
-            for name, q in ops:
-                lname = name.lower()
-                if lname in ("i", "id"):
-                    # no-op
-                    pass
-                else:
-                    meth_name = _STIM_ALIASES.get(lname)
-                    if meth_name is None:
-                        # shouldn't happen (we filtered), safeguard:
-                        return None
-                    getattr(sim, meth_name)(*q)
+        for op in ops:
+            if op.name in {"i", "id"}:
                 processed += 1
-                if progress_cb and (processed % BATCH == 0):
-                    progress_cb(BATCH)
-            if progress_cb and (processed % BATCH):
-                progress_cb(processed % BATCH)
-
-            if not want_statevector:
-                # We simulated the prefix quickly; no SV needed.
+                continue
+            gate = _STIM_GATES.get(op.name)
+            if gate is None:
+                LOGGER.debug("Partition %s contains non-Clifford gate '%s'.", getattr(circuit, "partition_id", "unknown"), op.name)
                 return None
+            stim_circuit.append(gate, list(op.qubits))
+            processed += 1
 
-            # Need a statevector for the next partition: build once via Clifford->SV
-            if np is None:
-                return None
-            return _clifford_ops_to_statevector(n, ops)
+        LOGGER.debug(
+            "Simulating partition %s on tableau backend with %d qubits and %d Clifford ops.",
+            getattr(circuit, "partition_id", "unknown"),
+            num_qubits,
+            processed,
+        )
 
-        # Fallback (no Stim): still avoid per-gate statevector simulation.
-        # Build a Clifford with Qiskit and materialize once if requested.
-        if progress_cb:
-            progress_cb(len(ops))  # coarse progress update
+        simulator = stim.TableauSimulator()
+        try:
+            simulator.do_circuit(stim_circuit)
+        except Exception:
+            LOGGER.exception("Stim failed while executing the partition.")
+            return None
+
+        if progress_cb is not None:
+            progress_cb(max(1, processed))
+
         if not want_statevector:
             return None
-        if np is None:
+
+        try:
+            state = simulator.state_vector()
+        except Exception:
+            LOGGER.exception("Stim tableau simulator does not provide a statevector.")
             return None
-        return _clifford_ops_to_statevector(n, ops)
+        return np.asarray(state, dtype=np.complex128)

@@ -1,30 +1,59 @@
-
 from __future__ import annotations
-from typing import Optional, Any, Callable
-import logging
 
-try:  # pragma: no cover - optional dependency
-    import numpy as np
-except ModuleNotFoundError:  # pragma: no cover
-    np = None  # type: ignore
+import logging
+from typing import Any, Callable, Optional
+
+import numpy as np
+from qiskit import QuantumCircuit
+from qiskit_aer import AerSimulator
+
+from ._partition import Operation, extract_operations
+
+LOGGER = logging.getLogger(__name__)
+
 
 def estimate_sv_bytes(n_qubits: int) -> int:
     if n_qubits <= 0:
         return 0
-    return 16 * (1 << n_qubits)  # complex128
+    return 16 * (1 << n_qubits)
 
-class StatevectorQubitMappingError(RuntimeError):
-    """Raised when a circuit instruction references qubits that cannot be mapped."""
+
+def _apply_operation(circuit: QuantumCircuit, op: Operation) -> None:
+    name = op.name
+    qubits = op.qubits
+    params = op.params
+
+    if name in {"i", "id"}:
+        return
+    if name in {"u", "u3"}:
+        theta, phi, lam = (params + (0.0, 0.0, 0.0))[:3]
+        circuit.u(theta, phi, lam, qubits[0])
+        return
+    if name == "u2":
+        phi, lam = (params + (0.0, 0.0))[:2]
+        circuit.u2(phi, lam, qubits[0])
+        return
+    if name in {"p", "u1"}:
+        circuit.p(params[0] if params else 0.0, qubits[0])
+        return
+    if name in {"rx", "ry", "rz"}:
+        getattr(circuit, name)(params[0] if params else 0.0, qubits[0])
+        return
+    if name == "cp":
+        circuit.cp(params[0] if params else 0.0, qubits[0], qubits[1])
+        return
+    if name == "rzz":
+        circuit.rzz(params[0] if params else 0.0, qubits[0], qubits[1])
+        return
+
+    method = getattr(circuit, name, None)
+    if method is None:
+        raise NotImplementedError(f"Unsupported gate '{op.name}' for statevector backend")
+    method(*qubits)
 
 
 class StatevectorBackend:
-    def __init__(self) -> None:
-        self._aer = None
-        try:
-            from qiskit_aer import Aer  # type: ignore
-            self._aer = Aer
-        except Exception:
-            self._aer = None
+    """Simulate partitions by delegating to :mod:`qiskit-aer`."""
 
     def run(
         self,
@@ -35,103 +64,54 @@ class StatevectorBackend:
         want_statevector: bool = True,
         batch_size: int = 1000,
     ) -> Optional[np.ndarray]:
-        """Simulate *circuit* as a statevector while emitting periodic progress callbacks."""
+        del batch_size
 
-        if np is None:
+        num_qubits, ops = extract_operations(circuit)
+        if num_qubits == 0 and want_statevector:
+            return np.array([1.0 + 0.0j], dtype=np.complex128)
+        if num_qubits == 0:
             return None
 
-        def _emit_progress(count: int) -> None:
-            if progress_cb is not None and count:
-                progress_cb(int(count))
+        partition_id = getattr(circuit, "partition_id", "unknown")
+        LOGGER.debug(
+            "Simulating partition %s on statevector backend with %d qubits and %d ops.",
+            partition_id,
+            num_qubits,
+            len(ops),
+        )
+
+        qc = QuantumCircuit(num_qubits)
+        for op in ops:
+            _apply_operation(qc, op)
+
+        run_args = {"shots": 1}
+        if initial_state is not None:
+            vec = np.asarray(initial_state, dtype=np.complex128).ravel()
+            expected = 1 << num_qubits
+            if vec.size != expected:
+                raise ValueError(
+                    f"Initial state has dimension {vec.size}, expected {expected} for {num_qubits} qubits.")
+            run_args["initial_statevector"] = vec
+
+        simulator = AerSimulator(method="statevector")
+        executable = qc.copy()
+        executable.save_statevector()
 
         try:
-            from qiskit.quantum_info import Statevector
+            result = simulator.run(executable, **run_args).result()
+        except Exception:
+            LOGGER.exception("qiskit-aer failed while executing the partition.")
+            return None
 
-            if batch_size <= 0:
-                batch_size = 1000
+        if progress_cb is not None:
+            progress_cb(max(1, len(ops)))
 
-            qubits = list(getattr(circuit, "qubits", []))
-            num_qubits = getattr(circuit, "num_qubits", len(qubits)) or 0
-            if not qubits and num_qubits:
-                qubits = [None] * num_qubits  # fallback so len works
-            qindex = {q: i for i, q in enumerate(qubits)}
+        if not want_statevector:
+            return None
 
-            if initial_state is None:
-                if num_qubits <= 0:
-                    return None if not want_statevector else np.array([1.0 + 0.0j], dtype=np.complex128)
-                state = Statevector.from_int(0, dims=(2,) * num_qubits)
-            else:
-                state = Statevector(initial_state)
-
-            data = list(getattr(circuit, "data", []))
-            processed_in_batch = 0
-            for inst, qargs, _ in data:
-                name = getattr(inst, "name", "")
-                if name.lower() in {"barrier", "snapshot"}:
-                    continue
-                try:
-                    indices = [qindex[q] for q in qargs]
-                except Exception as exc:
-                    indices = []
-                    missing_qubits = []
-                    for q in qargs:
-                        if q in qindex:
-                            indices.append(qindex[q])
-                            continue
-
-                        resolved_idx: Optional[int] = None
-                        if hasattr(circuit, "find_bit"):
-                            try:
-                                found = circuit.find_bit(q)
-                                # Qiskit returns either an index or a tuple (index, register).
-                                if isinstance(found, tuple):
-                                    resolved_idx = int(found[0])
-                                elif found is not None:
-                                    resolved_idx = int(found)
-                            except Exception:
-                                resolved_idx = None
-
-                        if resolved_idx is not None:
-                            qindex[q] = resolved_idx
-                            indices.append(resolved_idx)
-                        else:
-                            missing_qubits.append(q)
-
-                    if missing_qubits:
-                        partition = getattr(circuit, "partition_id", "unknown")
-                        qubit_list = ", ".join(str(q) for q in qargs)
-                        message = (
-                            f"Partition {partition}: unable to resolve qubits {qubit_list} "
-                            f"for instruction '{name}'."
-                        )
-                        logging.getLogger(__name__).error(message)
-                        raise StatevectorQubitMappingError(message) from exc
-                try:
-                    state = state.evolve(inst, qargs=indices)
-                except Exception:
-                    state = state.evolve(inst)
-                processed_in_batch += 1
-                if processed_in_batch >= batch_size:
-                    _emit_progress(processed_in_batch)
-                    processed_in_batch = 0
-            if processed_in_batch:
-                _emit_progress(processed_in_batch)
-
-            return np.asarray(state.data, dtype=np.complex128) if want_statevector else None
-        except Exception as exc:
-            if isinstance(exc, StatevectorQubitMappingError):
-                raise
-            try:
-                if self._aer is not None and initial_state is None:
-                    from qiskit_aer import Aer
-                    from qiskit import transpile
-
-                    backend = Aer.get_backend('aer_simulator_statevector')
-                    tqc = transpile(circuit, backend)
-                    result = backend.run(tqc).result()
-                    sv = result.get_statevector(tqc)
-                    _emit_progress(len(getattr(circuit, "data", [])) or 1)
-                    return np.asarray(sv, dtype=np.complex128) if want_statevector else None
-            except Exception:
-                pass
-        return None
+        try:
+            state = result.get_statevector(executable)
+        except Exception:
+            LOGGER.exception("Unable to fetch statevector result from qiskit-aer.")
+            return None
+        return np.asarray(state, dtype=np.complex128)
