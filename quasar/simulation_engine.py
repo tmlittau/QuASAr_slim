@@ -57,13 +57,28 @@ def _backend_runner(
         try:
             return tb.run(circ, progress_cb=progress_cb, want_statevector=want_statevector)
         except TypeError:
-            # Compatibility with older backend signature
             return tb.run(circ)
     if bname == "dd":
-        # You can thread progress_cb into the DD backend later if you add chunked progress there.
-        return DecisionDiagramBackend().run(circ)
-    # SV backend: forward progress_cb in future if you add chunking there.
-    return StatevectorBackend().run(circ, initial_state=initial_state)
+        dd = DecisionDiagramBackend()
+        try:
+            return dd.run(
+                circ,
+                initial_state=initial_state,
+                progress_cb=progress_cb,
+                want_statevector=want_statevector,
+            )
+        except TypeError:
+            return dd.run(circ)
+    sv = StatevectorBackend()
+    try:
+        return sv.run(
+            circ,
+            initial_state=initial_state,
+            progress_cb=progress_cb,
+            want_statevector=want_statevector,
+        )
+    except TypeError:
+        return sv.run(circ, initial_state=initial_state)
 
 def _group_chains(ssd: SSD):
     chains = {}
@@ -195,8 +210,9 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     if pr and pr.get("done", 0) < total_gates:
                         pr["done"] = int(total_gates)
                         pr["last_ts"] = time.time()
+                    success = (out is not None) or (not want_sv)
                     statuses[pid] = {
-                        "status": "ok" if out is not None else "failed",
+                        "status": "ok" if success else "failed",
                         "backend": node.backend,
                         "elapsed_s": elapsed,
                         "statevector_len": None if out is None else len(out),
