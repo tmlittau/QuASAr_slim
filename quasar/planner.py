@@ -96,8 +96,13 @@ def _count_ops(ops: List):
 def _build_subcircuit_like(parent, ops: List):
     from qiskit import QuantumCircuit
     sub = QuantumCircuit(parent.num_qubits)
+    qubit_map = {parent.qubits[i]: sub.qubits[i] for i in range(parent.num_qubits)}
     for inst, qargs, cargs in ops:
-        sub.append(inst, qargs, cargs)
+        local_qargs = [qubit_map[q] for q in qargs]
+        sub.append(inst, local_qargs, cargs)
+    parent_meta = getattr(parent, "metadata", None)
+    if parent_meta:
+        sub.metadata = dict(parent_meta)
     return sub
 
 def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
