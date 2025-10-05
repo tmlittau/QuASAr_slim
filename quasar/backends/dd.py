@@ -88,5 +88,4 @@ class DecisionDiagramBackend:
             if "statevector" in data:
                 return np.asarray(data["statevector"], dtype=np.complex128)
         except Exception:
-            pass
-        return None
+            return None
