@@ -2,7 +2,10 @@
 from __future__ import annotations
 from typing import Optional, Any, Callable
 
-import numpy as np
+try:  # pragma: no cover - optional dependency
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover
+    np = None  # type: ignore
 
 def ddsim_available() -> bool:
     try:
@@ -24,6 +27,9 @@ class DecisionDiagramBackend:
         """Simulate *circuit* with DDSIM and return a decision diagram or statevector."""
 
         del batch_size  # Only kept for backwards compatibility.
+
+        if np is None:
+            return None
 
         def _emit(count: int) -> None:
             if progress_cb is not None and count:

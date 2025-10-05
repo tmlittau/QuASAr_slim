@@ -1,15 +1,52 @@
 
 from __future__ import annotations
 
-import numpy as np
+import pytest
 
-from benchmarks.hybrid import random_clifford
+try:  # pragma: no cover - optional dependency for CLIFFORD tail example
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover
+    np = None  # type: ignore
+
 from quasar.analyzer import analyze
 from quasar.backends.sv import StatevectorBackend
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
+
+def test_hybrid_prefix_metrics():
+    pytest.importorskip("qiskit")
+    from qiskit import QuantumCircuit
+
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.h(1)
+    qc.rz(0.5, 0)
+    qc.cx(0, 1)
+    qc.rx(-0.2, 1)
+
+    analysis = analyze(qc)
+    cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=0.0)
+    planned = plan(analysis.ssd, cfg)
+
+    assert len(planned.partitions) == 2
+    prefix, tail = planned.partitions
+
+    assert prefix.metrics["num_gates"] == 3
+    assert prefix.metrics["is_clifford"] is True
+    assert prefix.metrics["rotation_count"] == 0
+    assert prefix.metrics["clifford_gates"] == 3
+
+    assert tail.metrics["num_gates"] == 3
+    assert tail.metrics["rotation_count"] == 2
+    assert tail.metrics["is_clifford"] is False
+    assert tail.metrics["clifford_gates"] == 1
+
 def build_clifford_tail(n=10, depth_cliff=50, depth_tail=5, seed=7):
+    pytest.importorskip("qiskit")
+    from benchmarks.hybrid import random_clifford
+
     qc = random_clifford(n, depth=depth_cliff, seed=seed)
     from qiskit import QuantumCircuit
     import numpy as np
@@ -27,6 +64,8 @@ def build_clifford_tail(n=10, depth_cliff=50, depth_tail=5, seed=7):
     return qc
 
 def main():
+    if np is None:
+        raise RuntimeError("numpy is required to run the CLIFFORD tail example")
     n = 10
     circ = build_clifford_tail(n=n)
     sv_full = StatevectorBackend().run(circ)
