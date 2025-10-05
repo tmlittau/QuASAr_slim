@@ -20,14 +20,17 @@ def stim_available() -> bool:
 # Gates we treat as Clifford
 CLIFFORD = {"i","id","x","y","z","h","s","sdg","cx","cz","swap"}
 
-# Map lowercase names to Stim TableauSimulator method names
-# (Stim uses uppercase method names.)
+# Map lowercase names to Stim TableauSimulator method names.
 _STIM_ALIASES: Dict[str, str] = {
-    "i": "I", "id": "I",
-    "x": "X", "y": "Y", "z": "Z",
-    "h": "H", "s": "S", "sdg": "S_DAG",
-    "cx": "CX", "cz": "CZ",
-    "swap": "SWAP",
+    "x": "x",
+    "y": "y",
+    "z": "z",
+    "h": "h",
+    "s": "s",
+    "sdg": "s_dag",
+    "cx": "cx",
+    "cz": "cz",
+    "swap": "swap",
 }
 
 def _is_supported(inst) -> bool:
