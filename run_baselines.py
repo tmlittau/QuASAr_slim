@@ -1,16 +1,19 @@
 
 from __future__ import annotations
-import argparse, json, logging, threading, time
+
+import argparse
+import json
+import logging
+import threading
+import time
 from typing import List
-from QuASAr.baselines import run_baselines
-import benchmark_circuits as bench
+
+from benchmarks import build as build_circuit
+from quasar.baselines import run_baselines
+
 
 def load_circuit(kind: str, **kwargs):
-    if kind == "ghz_clusters_random":
-        return bench.ghz_clusters_random(**kwargs)
-    if kind == "random_clifford":
-        return bench.random_clifford(**kwargs)
-    raise ValueError(f"unknown circuit kind '{kind}'")
+    return build_circuit(kind, **kwargs)
 
 def main():
     p = argparse.ArgumentParser()

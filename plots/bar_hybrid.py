@@ -1,7 +1,11 @@
 
 from __future__ import annotations
-import os, json, argparse
-from typing import List, Dict, Any, Tuple, Optional
+
+import argparse
+import json
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
 import matplotlib.pyplot as plt
 import numpy as np
 

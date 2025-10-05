@@ -1,15 +1,15 @@
 
 from __future__ import annotations
-import argparse, os, json
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan, PlannerConfig
-from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
-from QuASAr.baselines import run_baselines
 
-try:
-    from benchmark_circuits import dd_friendly_prefix_diag_tail
-except Exception:
-    from benchmark_circuits_dd_friendly import dd_friendly_prefix_diag_tail
+import argparse
+import json
+import os
+
+from benchmarks.dd_friendly import dd_friendly_prefix_diag_tail
+from quasar.analyzer import analyze
+from quasar.baselines import run_baselines
+from quasar.planner import PlannerConfig, plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 def main():
     ap = argparse.ArgumentParser(description="Run DD-friendly prefix+diag-tail circuits and write JSON results + bar plot")
@@ -53,13 +53,21 @@ def main():
                 json.dump(rec, f, indent=2)
 
     try:
-        from plot_hybrid_bars import make_plot
-        make_plot(args.out_dir, out=os.path.join(args.out_dir, "bars_dd_friendly.png"),
-                  title="DD-friendly prefix + diagonal tail: QuASAr vs whole-circuit baseline")
+        from plots.bar_hybrid import make_plot
+
+        make_plot(
+            args.out_dir,
+            out=os.path.join(args.out_dir, "bars_dd_friendly.png"),
+            title="DD-friendly prefix + diagonal tail: QuASAr vs whole-circuit baseline",
+        )
         print(f"Wrote {os.path.join(args.out_dir, 'bars_dd_friendly.png')}")
-    except Exception as e:
-        print("Plotting failed:", e)
-        print("You can plot manually with: python plot_hybrid_bars.py --suite-dir", args.out_dir, "--out bars_dd_friendly.png")
+    except Exception as exc:
+        print("Plotting failed:", exc)
+        print(
+            "You can plot manually with: python plots/bar_hybrid.py --suite-dir",
+            args.out_dir,
+            "--out bars_dd_friendly.png",
+        )
 
 if __name__ == "__main__":
     main()

@@ -1,14 +1,17 @@
 
 from __future__ import annotations
-import argparse, time, json
-from typing import Tuple, Dict, Any, List, Optional
 
-import numpy as np
+import argparse
+import json
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
-from QuASAr.cost_estimator import CostEstimator, CostParams
-import benchmark_circuits as bench
+from benchmarks.hybrid import clifford_prefix_rot_tail
+from quasar.cost_estimator import CostEstimator, CostParams
 
 # Same Clifford set as planner
 CLIFFORD = {"i","x","y","z","h","s","sdg","cx","cz","swap"}
@@ -43,7 +46,7 @@ def _counts_for_cutoff(qc, cutoff_idx: Optional[int]) -> Tuple[int,int,int,int]:
 
 def analyze_case(n: int, depth: int, cutoff: float, angle_scale: float,
                  est: CostEstimator) -> Dict[str, Any]:
-    qc = bench.clifford_prefix_rot_tail(
+    qc = clifford_prefix_rot_tail(
         num_qubits=n, depth=depth, cutoff=cutoff, angle_scale=angle_scale, seed=42
     )
     split_idx = _split_at_first_nonclifford(qc)
