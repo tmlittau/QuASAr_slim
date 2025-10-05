@@ -1,13 +1,17 @@
 
 from __future__ import annotations
-import argparse, json, os, logging
-from typing import Dict, Any, List, Optional
 
-import benchmark_circuits as bench
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan, PlannerConfig
-from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
-from QuASAr.baselines import run_baselines
+import argparse
+import json
+import logging
+import os
+from typing import Any, Dict, List, Optional
+
+from benchmarks.hybrid import clifford_prefix_rot_tail
+from quasar.analyzer import analyze
+from quasar.baselines import run_baselines
+from quasar.planner import PlannerConfig, plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 def load_thresholds(path: str) -> Dict[str, Any]:
     with open(path, "r") as f:
@@ -46,8 +50,13 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
         depth = int(r["first_depth"])
         log.info("Running threshold case: n=%d depth=%d cutoff=%.2f", n, depth, cutoff)
 
-        circ = bench.clifford_prefix_rot_tail(num_qubits=n, depth=depth, cutoff=float(cutoff),
-                                              angle_scale=angle_scale, seed=42)
+        circ = clifford_prefix_rot_tail(
+            num_qubits=n,
+            depth=depth,
+            cutoff=float(cutoff),
+            angle_scale=angle_scale,
+            seed=42,
+        )
 
         a = analyze(circ)
         cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
@@ -70,12 +79,21 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
             json.dump(rec_out, f, indent=2)
 
     try:
-        from plot_clifford_tail_bars import make_plot
+        from plots.bar_clifford_tail import make_plot
+
         plot_path = os.path.join(out_dir, "bars_from_thresholds.png")
-        make_plot(out_dir, out=plot_path, title=f"Threshold bars (cutoff={cutoff}, conv={conv_factor}, twoq={twoq_factor})")
+        make_plot(
+            out_dir,
+            out=plot_path,
+            title=f"Threshold bars (cutoff={cutoff}, conv={conv_factor}, twoq={twoq_factor})",
+        )
         log.info("Wrote bar chart: %s", plot_path)
-    except Exception as e:
-        log.warning("Plot generation failed: %s. You can run: python plot_clifford_tail_bars.py --suite-dir %s --out bars_from_thresholds.png", e, out_dir)
+    except Exception as exc:
+        log.warning(
+            "Plot generation failed: %s. You can run: python plots/bar_clifford_tail.py --suite-dir %s --out bars_from_thresholds.png",
+            exc,
+            out_dir,
+        )
 
 def main():
     ap = argparse.ArgumentParser(description="Run benchmark cases derived from saved thresholds and plot bars.")

@@ -1,17 +1,18 @@
 
 from __future__ import annotations
-import argparse, json, logging
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan
-from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
-import benchmark_circuits as bench
+
+import argparse
+import json
+import logging
+
+from benchmarks import build as build_circuit
+from quasar.analyzer import analyze
+from quasar.planner import plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
+
 
 def load_circuit(kind: str, **kwargs):
-    if kind == "ghz_clusters_random":
-        return bench.ghz_clusters_random(**kwargs)
-    if kind == "random_clifford":
-        return bench.random_clifford(**kwargs)
-    raise ValueError(f"unknown circuit kind '{kind}'")
+    return build_circuit(kind, **kwargs)
 
 def main():
     p = argparse.ArgumentParser()

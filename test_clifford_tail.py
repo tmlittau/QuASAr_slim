@@ -1,14 +1,16 @@
 
 from __future__ import annotations
+
 import numpy as np
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan, PlannerConfig
-from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
-from QuASAr.backends.sv import StatevectorBackend
-import benchmark_circuits as bench
+
+from benchmarks.hybrid import random_clifford
+from quasar.analyzer import analyze
+from quasar.backends.sv import StatevectorBackend
+from quasar.planner import PlannerConfig, plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 def build_clifford_tail(n=10, depth_cliff=50, depth_tail=5, seed=7):
-    qc = bench.random_clifford(n, depth=depth_cliff, seed=seed)
+    qc = random_clifford(n, depth=depth_cliff, seed=seed)
     from qiskit import QuantumCircuit
     import numpy as np
     tail = QuantumCircuit(n)

@@ -1,14 +1,16 @@
 
 from __future__ import annotations
-import argparse, json
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan, execute, PlannerConfig
-import benchmark_circuits as bench
+
+import argparse
+import json
+
+from benchmarks import CIRCUIT_REGISTRY, build as build_circuit
+from quasar.analyzer import analyze
+from quasar.planner import PlannerConfig, plan
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--kind", type=str, default="ghz_clusters_random",
-                   choices=list(bench.CIRCUIT_REGISTRY.keys()))
+    p.add_argument("--kind", type=str, default="ghz_clusters_random", choices=list(CIRCUIT_REGISTRY.keys()))
     p.add_argument("--num-qubits", type=int, default=64)
     p.add_argument("--block-size", type=int, default=8)
     p.add_argument("--depth", type=int, default=200)
@@ -41,12 +43,12 @@ def main():
         kw.update(depth=args.depth, rot_prob=args.rot_prob, angle_scale=args.angle_scale,
                   pair_scope=args.pair_scope, block_size=args.block_size)
 
-    circ = bench.build(args.kind, **kw)
+    circ = build_circuit(args.kind, **kw)
     analysis = analyze(circ)
     cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, prefer_dd=args.prefer_dd,
                         conv_amp_ops_factor=args.conv_factor, sv_twoq_factor=args.twoq_factor)
     ssd = plan(analysis.ssd, cfg)
-    from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
+    from quasar.simulation_engine import ExecutionConfig, execute_ssd
     exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=args.max_ram_gb))
     payload = {"analysis": {"global": analysis.metrics_global, "ssd": ssd.to_dict()}, "execution": exec_payload}
     with open(args.out, "w") as f:

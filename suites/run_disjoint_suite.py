@@ -7,27 +7,18 @@ import time
 import traceback
 from typing import Any, Dict, List, Tuple
 
-from QuASAr.analyzer import analyze
-from QuASAr.baselines import run_baselines
-from QuASAr.planner import PlannerConfig, plan
-from QuASAr.simulation_engine import ExecutionConfig, execute_ssd
-
-try:
-    from benchmark_circuits import disjoint_preps_plus_tails
-except (ImportError, AttributeError):  # pragma: no cover - fallback for legacy layouts
-    try:
-        from benchmark_circuits_dd_friendly import disjoint_preps_plus_tails  # type: ignore
-    except (ImportError, AttributeError) as exc:  # pragma: no cover - clearer error surfacing
-        raise ImportError(
-            "disjoint_preps_plus_tails is not available; ensure benchmark_circuits provides it"
-        ) from exc
+from benchmarks.disjoint import disjoint_preps_plus_tails
+from quasar.analyzer import analyze
+from quasar.baselines import run_baselines
+from quasar.planner import PlannerConfig, plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 
 def _build_case_params(args: argparse.Namespace, n: int, blocks: int) -> Dict[str, Any]:
     params: Dict[str, Any] = {
         "num_qubits": int(n),
-        "blocks": int(blocks),
-        "prep": args.prep,
+        "num_blocks": int(blocks),
+        "block_prep": args.prep,
         "tail_kind": args.tail_kind,
         "tail_depth": int(args.tail_depth),
         "angle_scale": float(args.angle_scale),
@@ -157,8 +148,8 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--n", type=int, nargs="+", required=True, help="Number of qubits to sweep")
-    parser.add_argument("--blocks", type=int, nargs="+", required=True, help="Block counts to sweep")
-    parser.add_argument("--prep", type=str, default="mixed", help="Preparation routine kind")
+    parser.add_argument("--blocks", "--num-blocks", type=int, nargs="+", required=True, dest="blocks", help="Block counts to sweep")
+    parser.add_argument("--block-prep", "--prep", type=str, default="mixed", dest="prep", help="Preparation routine kind")
     parser.add_argument("--tail-kind", type=str, default="mixed", help="Tail circuit kind")
     parser.add_argument("--tail-depth", type=int, default=20, help="Tail depth layers")
     parser.add_argument("--angle-scale", type=float, default=0.1, help="Tail rotation angle scale")

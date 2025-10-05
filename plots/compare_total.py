@@ -1,6 +1,9 @@
 
 from __future__ import annotations
-import argparse, json
+
+import argparse
+import json
+
 import matplotlib.pyplot as plt
 
 def _safe_float(x, default=0.0):

@@ -1,13 +1,17 @@
 from __future__ import annotations
-import argparse, json, os, logging, time
+import argparse
+import json
+import logging
+import os
+import time
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-import benchmark_circuits as bench
-from QuASAr.analyzer import analyze
-from QuASAr.planner import plan, PlannerConfig
-from QuASAr.simulation_engine import execute_ssd, ExecutionConfig
-from QuASAr.baselines import run_baselines
+from benchmarks import build as build_circuit
+from quasar.analyzer import analyze
+from quasar.baselines import run_baselines
+from quasar.planner import PlannerConfig, plan
+from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 @dataclass
 class CaseSpec:
@@ -33,7 +37,7 @@ def run_case(case: CaseSpec, *, max_ram_gb: float, sv_ampops_per_sec: float | No
              conv_factor: float, twoq_factor: float) -> Dict[str, Any]:
     name = case.kind
     params = dict(case.params)
-    circ = bench.build(name, **params)
+    circ = build_circuit(name, **params)
 
     a = analyze(circ)
     cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
