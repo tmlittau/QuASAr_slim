@@ -1,7 +1,12 @@
 
 from __future__ import annotations
 from typing import Optional, Any
-import numpy as np
+
+
+try:
+    from mqt.core.dd import VectorDD  # type: ignore
+except Exception:  # pragma: no cover - optional dependency during type checking
+    VectorDD = Any  # type: ignore[misc,assignment]
 
 def ddsim_available() -> bool:
     try:
@@ -11,18 +16,19 @@ def ddsim_available() -> bool:
         return False
 
 class DecisionDiagramBackend:
-    def run(self, circuit: Any) -> Optional[np.ndarray]:
+    def run(self, circuit: Any) -> Optional[VectorDD]:
         try:
             import mqt.ddsim as ddsim  # type: ignore
-            sim = ddsim.DDSIMProvider().get_backend('qasm_simulator')
-            job = sim.run(circuit, shots=0)
-            res = job.result()
-            if hasattr(res, "get_statevector"):
-                sv = res.get_statevector(circuit)
-                return np.asarray(sv, dtype=np.complex128)
-            data = res.data(circuit)
-            if "statevector" in data:
-                return np.asarray(data["statevector"], dtype=np.complex128)
+            from mqt.core import QuantumComputation  # type: ignore
+            from qiskit.qasm3 import dumps as qasm3_dumps
         except Exception:
-            pass
-        return None
+            return None
+
+        try:
+            qasm = qasm3_dumps(circuit)
+            qc = QuantumComputation.from_qasm_str(qasm)
+            simulator = ddsim.CircuitSimulator(qc)
+            simulator.simulate(0)
+            return simulator.get_constructed_dd()
+        except Exception:
+            return None
