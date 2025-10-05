@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from typing import Optional, Any, Callable
+
 import numpy as np
 
 def ddsim_available() -> bool:
@@ -19,8 +20,10 @@ class DecisionDiagramBackend:
         progress_cb: Optional[Callable[[int], None]] = None,
         want_statevector: bool = False,
         batch_size: int = 500,
-    ) -> Optional[np.ndarray]:
-        """Run the DDSIM backend while emitting coarse-grained progress callbacks."""
+    ) -> Optional[Any]:
+        """Simulate *circuit* with DDSIM and return a decision diagram or statevector."""
+
+        del batch_size  # Only kept for backwards compatibility.
 
         def _emit(count: int) -> None:
             if progress_cb is not None and count:
@@ -28,64 +31,88 @@ class DecisionDiagramBackend:
 
         try:
             import mqt.ddsim as ddsim  # type: ignore
-            if batch_size <= 0:
-                batch_size = 500
+            from mqt.core import load  # type: ignore
+            from mqt.core.dd import DDPackage  # type: ignore
+        except Exception:
+            return None
 
-            total_ops = 0
+        prepared_circuit = circuit
+        total_ops = 0
+
+        qiskit_qc: Any = None
+        try:
+            from qiskit import QuantumCircuit  # type: ignore
+
+            if isinstance(circuit, QuantumCircuit):
+                qiskit_qc = circuit
+        except Exception:
+            QuantumCircuit = None  # type: ignore
+
+        if initial_state is not None:
+            init_vec = np.asarray(initial_state, dtype=np.complex128).ravel()
+            need_fallback = False
+            target_qubits = None
+
+            if qiskit_qc is not None:
+                target_qubits = int(qiskit_qc.num_qubits)
+                if target_qubits <= 0:
+                    return None
+                expected = 1 << target_qubits
+                if init_vec.size != expected:
+                    raise ValueError(
+                        f"Initial state has dimension {init_vec.size}, expected {expected} for {target_qubits} qubits."
+                    )
+                try:
+                    from qiskit.circuit.library import StatePreparation  # type: ignore
+
+                    prep = QuantumCircuit(target_qubits)
+                    prep.append(StatePreparation(init_vec, normalize=True), range(target_qubits))
+                    prepared_circuit = prep.compose(qiskit_qc)
+                except Exception:
+                    need_fallback = True
+            else:
+                need_fallback = True
+
+            if need_fallback:
+                try:
+                    from .sv import StatevectorBackend  # type: ignore
+
+                    sv_backend = StatevectorBackend()
+                    sv = sv_backend.run(
+                        circuit,
+                        initial_state=init_vec,
+                        progress_cb=progress_cb,
+                        want_statevector=True,
+                    )
+                except Exception:
+                    sv = None
+
+                if sv is None:
+                    return None
+
+                vector = np.asarray(sv, dtype=np.complex128)
+                length = int(vector.size)
+                if length <= 0 or length & (length - 1):
+                    raise ValueError("Statevector length must be a power of two.")
+                num_qubits = length.bit_length() - 1
+                pkg = DDPackage(num_qubits)
+                dd = pkg.from_vector(vector)
+                return vector if want_statevector else dd
+
+        try:
+            prepared_qc = load(prepared_circuit)
             try:
-                total_ops = len(getattr(circuit, "data", []))
+                total_ops = int(getattr(prepared_qc, "num_ops", 0))
             except Exception:
-                total_ops = 0
+                total_ops = len(getattr(prepared_circuit, "data", []))
 
-            # Try to use a step-wise simulator if available (newer DDSIM releases).
-            try:
-                sim_cls = getattr(ddsim, "CircuitSimulator", None)
-                if sim_cls is not None:
-                    step_sim = sim_cls(circuit)
-                    step_fn = getattr(step_sim, "simulate", None)
-                    get_sv = getattr(step_sim, "get_statevector", None)
-                    processed = 0
-                    if callable(step_fn):
-                        while True:
-                            if total_ops and processed >= total_ops:
-                                break
-                            step = batch_size
-                            if total_ops:
-                                step = min(batch_size, total_ops - processed)
-                                if step <= 0:
-                                    break
-                            step_fn(step)
-                            processed += step
-                            _emit(step)
-                        if want_statevector and callable(get_sv):
-                            sv_data = get_sv()
-                            if sv_data is not None:
-                                return np.asarray(sv_data, dtype=np.complex128)
-                        if not want_statevector:
-                            return None
-            except Exception:
-                # Fall back to provider-based execution.
-                pass
-
-            sim = ddsim.DDSIMProvider().get_backend('qasm_simulator')
-            run_opts: dict[str, Any] = {"shots": 0}
-            if initial_state is not None:
-                run_opts["initial_statevector"] = initial_state
-            try:
-                job = sim.run(circuit, **run_opts)
-            except TypeError:
-                # Older interfaces might not understand initial_statevector.
-                run_opts.pop("initial_statevector", None)
-                job = sim.run(circuit, **run_opts)
-            res = job.result()
+            simulator = ddsim.CircuitSimulator(prepared_qc)
+            simulator.simulate(0)
+            dd = simulator.get_constructed_dd()
             _emit(total_ops or 1)
-            if not want_statevector:
-                return None
-            if hasattr(res, "get_statevector"):
-                sv = res.get_statevector(circuit)
-                return np.asarray(sv, dtype=np.complex128)
-            data = res.data(circuit)
-            if "statevector" in data:
-                return np.asarray(data["statevector"], dtype=np.complex128)
+
+            if want_statevector:
+                return np.array(dd.get_vector(), dtype=np.complex128, copy=True)
+            return dd
         except Exception:
             return None
