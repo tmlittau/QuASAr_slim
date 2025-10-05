@@ -1,7 +1,11 @@
 
 from __future__ import annotations
 from typing import Optional, Any, Callable
-import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover
+    np = None  # type: ignore
 
 def estimate_sv_bytes(n_qubits: int) -> int:
     if n_qubits <= 0:
@@ -27,6 +31,9 @@ class StatevectorBackend:
         batch_size: int = 1000,
     ) -> Optional[np.ndarray]:
         """Simulate *circuit* as a statevector while emitting periodic progress callbacks."""
+
+        if np is None:
+            return None
 
         def _emit_progress(count: int) -> None:
             if progress_cb is not None and count:

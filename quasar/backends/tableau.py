@@ -1,6 +1,10 @@
 from __future__ import annotations
 from typing import Optional, Any, Callable, Sequence, Dict, Tuple, List
-import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover
+    np = None  # type: ignore
 
 # --------------------------------------------------------------------------------------
 # Availability
@@ -66,12 +70,15 @@ def _extract_ops_qiskit(circuit: Any) -> Tuple[int, List[Tuple[str, Tuple[int, .
     except Exception:
         return 0, []
 
-def _clifford_ops_to_statevector(n: int, ops: List[Tuple[str, Tuple[int, ...]]]) -> np.ndarray:
+def _clifford_ops_to_statevector(n: int, ops: List[Tuple[str, Tuple[int, ...]]]) -> Optional[np.ndarray]:
     """
     Convert a Clifford defined by 'ops' on n qubits into a statevector without
     simulating a full statevector time-evolution per gate.
     Strategy: build a Qiskit Clifford and then Clifford->Statevector once.
     """
+
+    if np is None:
+        return None
     # We build a pure-Clifford circuit and then call Clifford.from_circuit (or Clifford(circuit))
     from qiskit import QuantumCircuit
     from qiskit.quantum_info import Clifford, Statevector
@@ -140,6 +147,8 @@ class TableauBackend:
                 return None
 
             # Need a statevector for the next partition: build once via Clifford->SV
+            if np is None:
+                return None
             return _clifford_ops_to_statevector(n, ops)
 
         # Fallback (no Stim): still avoid per-gate statevector simulation.
@@ -147,5 +156,7 @@ class TableauBackend:
         if progress_cb:
             progress_cb(len(ops))  # coarse progress update
         if not want_statevector:
+            return None
+        if np is None:
             return None
         return _clifford_ops_to_statevector(n, ops)
