@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from typing import Optional, Any, Callable
+import logging
 
 try:  # pragma: no cover - optional dependency
     import numpy as np
@@ -11,6 +12,10 @@ def estimate_sv_bytes(n_qubits: int) -> int:
     if n_qubits <= 0:
         return 0
     return 16 * (1 << n_qubits)  # complex128
+
+class StatevectorQubitMappingError(RuntimeError):
+    """Raised when a circuit instruction references qubits that cannot be mapped."""
+
 
 class StatevectorBackend:
     def __init__(self) -> None:
@@ -66,8 +71,41 @@ class StatevectorBackend:
                     continue
                 try:
                     indices = [qindex[q] for q in qargs]
-                except Exception:
-                    indices = None
+                except Exception as exc:
+                    indices = []
+                    missing_qubits = []
+                    for q in qargs:
+                        if q in qindex:
+                            indices.append(qindex[q])
+                            continue
+
+                        resolved_idx: Optional[int] = None
+                        if hasattr(circuit, "find_bit"):
+                            try:
+                                found = circuit.find_bit(q)
+                                # Qiskit returns either an index or a tuple (index, register).
+                                if isinstance(found, tuple):
+                                    resolved_idx = int(found[0])
+                                elif found is not None:
+                                    resolved_idx = int(found)
+                            except Exception:
+                                resolved_idx = None
+
+                        if resolved_idx is not None:
+                            qindex[q] = resolved_idx
+                            indices.append(resolved_idx)
+                        else:
+                            missing_qubits.append(q)
+
+                    if missing_qubits:
+                        partition = getattr(circuit, "partition_id", "unknown")
+                        qubit_list = ", ".join(str(q) for q in qargs)
+                        message = (
+                            f"Partition {partition}: unable to resolve qubits {qubit_list} "
+                            f"for instruction '{name}'."
+                        )
+                        logging.getLogger(__name__).error(message)
+                        raise StatevectorQubitMappingError(message) from exc
                 try:
                     state = state.evolve(inst, qargs=indices)
                 except Exception:
@@ -80,7 +118,9 @@ class StatevectorBackend:
                 _emit_progress(processed_in_batch)
 
             return np.asarray(state.data, dtype=np.complex128) if want_statevector else None
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, StatevectorQubitMappingError):
+                raise
             try:
                 if self._aer is not None and initial_state is None:
                     from qiskit_aer import Aer

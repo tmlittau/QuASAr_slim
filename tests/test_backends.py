@@ -13,7 +13,12 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from qiskit.circuit import QuantumRegister
+from qiskit.circuit.library import XGate
+from qiskit.circuit.exceptions import CircuitError
+
 from quasar.backends import DecisionDiagramBackend, StatevectorBackend
+from quasar.backends.sv import StatevectorQubitMappingError
 
 
 def _bell_state_circuit() -> QuantumCircuit:
@@ -67,3 +72,27 @@ def test_decision_diagram_backend_matches_bell_state():
 
     assert vector.shape == (4,)
     assert np.allclose(vector, _expected_bell_state())
+
+
+def test_statevector_backend_flags_mismapped_qubits():
+    class MiswiredCircuit:
+        def __init__(self) -> None:
+            good_reg = QuantumRegister(1, "good")
+            bad_reg = QuantumRegister(1, "bad")
+            self.qubits = [good_reg[0]]
+            self.num_qubits = 1
+            self.partition_id = "test-partition"
+            self.data = [(XGate(), [bad_reg[0]], [])]
+
+        def find_bit(self, bit):  # type: ignore[override]
+            raise CircuitError("bit not found")
+
+    backend = StatevectorBackend()
+
+    with pytest.raises(StatevectorQubitMappingError) as exc_info:
+        backend.run(MiswiredCircuit())
+
+    message = str(exc_info.value)
+    assert "test-partition" in message
+    assert "x" in message.lower()
+    assert "bad" in message
