@@ -37,7 +37,8 @@ Circuit generators live under `benchmarks/`:
 - `benchmarks.dd_friendly` — line-graph Clifford prefixes with sparse diagonal
 tails optimised for decision-diagram simulators.
 - `benchmarks.disjoint` — block-disjoint preparation + tail families with
-  configurable GHZ/W prep and Clifford/diagonal tails.
+  configurable GHZ/W prep and Clifford/diagonal tails. Blocks are constructed
+  without cross-couplings so they can be simulated in parallel.
 - `benchmarks.__init__` — registry aggregator. Import
   `from benchmarks import build` to fetch any circuit by name.
 
@@ -49,12 +50,16 @@ JSON files and an `index.json` summary. Example usage:
 ```bash
 python suites/run_hybrid_suite.py --out-dir suite_hybrid --num-qubits 64 96 --block-size 8
 python suites/run_dd_friendly_suite.py --out-dir suite_dd --n 16 24 32 --depth 100 200
-python suites/run_disjoint_suite.py --out-dir suite_disjoint --n 48 64 --blocks 6 8
+python suites/run_disjoint_suite.py --out-dir suite_disjoint --n 32 48 --blocks 2 4 \
+    --prep mixed --tail-kind mixed --tail-depth 20
 ```
 
 All suites accept planner controls (`--conv-factor`, `--twoq-factor`,
 `--max-ram-gb`) and emit the QuASAr analysis, plan, execution payload, and
-baseline measurements per circuit.
+baseline measurements per circuit. The disjoint sweep further allows tuning the
+block preparation (`--prep`), tail type (`--tail-kind`), and per-block tail
+depth/angles so you can probe GHZ or W structures with optional Clifford or
+diagonal tails.
 
 To orchestrate multiple suites and reproduce the paper figures in one shot, use
 `scripts/make_figures_and_tables.py`:
@@ -65,8 +70,12 @@ python scripts/make_figures_and_tables.py --workspace paper_artifacts
 
 The script runs the hybrid, DD-friendly, and disjoint suites (unless skipped via
 `--skip-*` flags), produces stacked bar plots in the workspace directory, and
-writes a Markdown summary table aggregating the index files. Use
-`--*-extra "..."` to forward additional CLI arguments to individual suites.
+writes a Markdown summary table aggregating the index files. Use `--*-extra` to
+forward additional CLI arguments to individual suites. For the disjoint command,
+the helper also invokes `plots/bar_disjoint.py` so you receive a side-by-side bar
+chart comparing the parallel QuASAr wall time against the fastest whole-circuit
+baseline (statevector, decision diagram, or tableau, colour-coded blue/orange/
+green).
 
 ## Plotting utilities
 
@@ -76,7 +85,10 @@ All plotters now live under `plots/`:
   hybrid-style circuits (also used by the DD-friendly suite).
 - `plots/bar_clifford_tail.py` — stacked bars focused on Clifford-prefix vs
   rotation-tail experiments.
-- `plots/bar_disjoint.py` — parallel disjoint benchmark comparison.
+- `plots/bar_disjoint.py` — parallel disjoint benchmark comparison. Produces a
+  two-bar chart per `(n, blocks)` pair showing QuASAr's parallel runtime next to
+  the best whole-circuit baseline with the simulator type encoded in the bar
+  colour.
 - `plots/compare_total.py` — convenience helpers to compare total QuASAr vs
   baseline runtimes or visualise SSD partition timings.
 
