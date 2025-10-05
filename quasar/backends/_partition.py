@@ -52,6 +52,24 @@ def extract_operations(circuit: Any) -> Tuple[int, List[Operation]]:
                 continue
             raise TypeError("Unrecognised circuit data entry: {!r}".format(entry))
 
+    def _coerce_param(value: Any) -> float:
+        """Convert *value* into a float, accepting numeric complex inputs."""
+
+        # Fast path for plain numbers
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+
+        try:
+            comp = complex(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - unexpected symbolic parameter
+            raise TypeError("Parameter could not be coerced to a numeric value") from exc
+
+        if abs(comp.imag) > 1e-12:  # pragma: no cover - QuASAr expects real rotation angles
+            raise TypeError("Complex-valued parameters are not supported")
+        return float(comp.real)
+
     for inst, qargs in _iter_instructions(qc.data):
         name = getattr(inst, "name", "").lower()
         if name in {"barrier"}:
@@ -59,7 +77,7 @@ def extract_operations(circuit: Any) -> Tuple[int, List[Operation]]:
         qubits = tuple(qubit_indices[q] for q in qargs)
         raw_params = getattr(inst, "params", ())
         try:
-            params = tuple(float(complex(p)) for p in raw_params)
+            params = tuple(_coerce_param(p) for p in raw_params)
         except TypeError as exc:  # pragma: no cover - unexpected symbolic parameter
             raise TypeError(f"Unsupported symbolic parameter in instruction '{name}'") from exc
         operations.append(Operation(name=name, qubits=qubits, params=params))
