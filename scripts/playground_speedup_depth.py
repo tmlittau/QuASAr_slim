@@ -103,7 +103,7 @@ def main():
                                    sv_twoq_factor=args.twoq_factor))
 
     # Collect results: each series corresponds to a (n, cutoff) pair
-    series = []  # list of dicts with keys: n, cutoff, depths, speedups, sv_norms, hybrid_norms
+    records = []  # list of dicts with keys: n, cutoff, depths, speedups, sv_norms, hybrid_norms
     print("n, cutoff, depth, speedup, sv_total_norm, hybrid_norm")
     for c in args.cutoff:
         for n in args.n:
@@ -114,7 +114,7 @@ def main():
                 sv_norms.append(res["sv_total_norm"])
                 hyb_norms.append(res["hybrid_norm"])
                 print(f"{n},{c},{d},{res['speedup_vs_sv']:.3f},{res['sv_total_norm']:.1f},{res['hybrid_norm']:.1f}")
-            series.append({
+            records.append({
                 "n": n, "cutoff": c, "depths": depths,
                 "speedups": spds, "sv_total_norm": sv_norms, "hybrid_norm": hyb_norms
             })
@@ -136,7 +136,7 @@ def main():
                     "target_speedup": args.target_speedup,
                 }
             },
-            "series": series
+            "records": records
         }
         with open(args.save_json, "w") as f:
             json.dump(payload, f, indent=2)
@@ -144,9 +144,9 @@ def main():
 
     # Plot: x = depth, y = speedup; one line per (n, cutoff)
     plt.figure(figsize=(9, 5))
-    for s in series:
-        label = f"n={s['n']}, cutoff={float(s['cutoff']):.2f}"
-        plt.plot(s["depths"], s["speedups"], label=label)
+    for r in records:
+        label = f"n={r['n']}, cutoff={float(r['cutoff']):.2f}"
+        plt.plot(r["depths"], r["speedups"], label=label)
     # reference speedup line
     if args.target_speedup and args.target_speedup > 0:
         plt.axhline(args.target_speedup, linestyle="--", linewidth=1)

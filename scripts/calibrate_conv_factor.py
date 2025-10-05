@@ -11,8 +11,8 @@ except Exception as e:
     raise SystemExit("qiskit is required for calibration. Install with: pip install qiskit") from e
 
 # Import slim backends (Tableau + SV)
-from .backends.tableau import TableauBackend, stim_available
-from .backends.sv import StatevectorBackend
+from quasar.backends.tableau import TableauBackend, stim_available
+from quasar.backends.sv import StatevectorBackend
 # We'll reuse the same gate classification as the planner
 CLIFFORD = {"i","x","y","z","h","s","sdg","cx","cz","swap"}
 
