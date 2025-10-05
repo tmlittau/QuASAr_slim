@@ -17,7 +17,7 @@ class DecisionDiagramBackend:
         *,
         initial_state: Optional[np.ndarray] = None,
         progress_cb: Optional[Callable[[int], None]] = None,
-        want_statevector: bool = True,
+        want_statevector: bool = False,
         batch_size: int = 500,
     ) -> Optional[np.ndarray]:
         """Run the DDSIM backend while emitting coarse-grained progress callbacks."""
