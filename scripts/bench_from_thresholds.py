@@ -61,6 +61,40 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
         a = analyze(circ)
         cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
         ssd = plan(a.ssd, cfg)
+        partition_summaries: List[str] = []
+        for node in ssd.partitions:
+            backend = node.backend or "unassigned"
+            if hasattr(node.circuit, "data"):
+                try:
+                    gate_count = len(node.circuit.data)
+                except TypeError:
+                    gate_count = None
+            elif hasattr(node.circuit, "size") and callable(getattr(node.circuit, "size")):
+                gate_count = node.circuit.size()
+            else:
+                gate_count = None
+
+            chain_id = node.meta.get("chain_id") if node.meta else None
+            seq_index = node.meta.get("seq_index") if node.meta else None
+            chain_bits: List[str] = []
+            if chain_id is not None:
+                chain_bits.append(f"chain={chain_id}")
+            if seq_index is not None:
+                chain_bits.append(f"seq={seq_index}")
+            chain_info = ", ".join(chain_bits) if chain_bits else "chain=?"
+
+            if gate_count is None:
+                gate_info = "gates=?"
+            else:
+                gate_info = f"gates={gate_count}"
+
+            partition_summaries.append(
+                f"id={node.id} backend={backend} {chain_info} {gate_info}"
+            )
+
+        log.info("Planner produced %d partitions", len(ssd.partitions))
+        for summary in partition_summaries:
+            log.info("  %s", summary)
         exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=max_ram_gb))
 
         bl = run_baselines(circ, which=["tableau","sv","dd"], per_partition=False,
