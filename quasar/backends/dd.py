@@ -102,6 +102,8 @@ class DecisionDiagramBackend:
         simulator = ddsim.CircuitSimulator(qc)
         try:
             simulator.simulate(0)
+        except TimeoutError:
+            raise
         except Exception:
             LOGGER.exception("DDSIM failed while executing the partition.")
             return None
@@ -113,6 +115,8 @@ class DecisionDiagramBackend:
         if want_statevector:
             try:
                 return np.array(dd.get_vector(), dtype=np.complex128)
+            except TimeoutError:
+                raise
             except Exception:
                 LOGGER.exception("DDSIM did not provide a statevector representation.")
                 return None
