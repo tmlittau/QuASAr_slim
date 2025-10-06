@@ -44,12 +44,15 @@ def _compute_blocks(num_qubits: int, num_blocks: int) -> List[Tuple[int, ...]]:
     return blocks
 
 
-def _gate_qubits(qargs: Sequence[Any]) -> Tuple[int, ...]:
+def _gate_qubits(qargs: Sequence[Any], qubit_indices: Dict[Any, int]) -> Tuple[int, ...]:
     indices: List[int] = []
     for q in qargs:
+        if isinstance(q, int):
+            indices.append(q)
+            continue
         try:
-            idx = int(getattr(q, "index"))
-        except AttributeError as exc:  # pragma: no cover - defensive fallback
+            idx = qubit_indices[q]
+        except KeyError as exc:  # pragma: no cover - defensive fallback
             raise TypeError(f"Unsupported qubit argument type: {type(q)!r}") from exc
         indices.append(idx)
     return tuple(indices)
@@ -63,14 +66,18 @@ def _summarize_blocks(qc, blocks: Sequence[Tuple[int, ...]]) -> List[BlockSummar
 
     counts = [[0, 0] for _ in blocks]  # [oneq, twoq]
 
-    for inst, qargs, _ in qc.data:
-        qubits = _gate_qubits(qargs)
+    qubit_indices: Dict[Any, int] = {qubit: index for index, qubit in enumerate(qc.qubits)}
+
+    for instruction in qc.data:
+        qubits = _gate_qubits(instruction.qubits, qubit_indices)
         if not qubits:
             continue
         block_indices = {qubit_to_block.get(q) for q in qubits}
         if None in block_indices:
             missing = sorted(q for q in qubits if q not in qubit_to_block)
-            raise ValueError(f"Gate {inst} targets qubits outside the declared blocks: {missing}")
+            raise ValueError(
+                f"Gate {instruction.operation} targets qubits outside the declared blocks: {missing}"
+            )
         if len(block_indices) != 1:
             raise ValueError(
                 "Encountered multi-block gate; the disjoint generator is expected to keep blocks independent"
