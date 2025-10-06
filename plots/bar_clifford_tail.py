@@ -9,12 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-COLORS = {
-    "tableau": "#A5D6A7",  # pastel green
-    "sv": "#90CAF9",       # pastel blue
-    "dd": "#FFCCBC",       # pastel orange
-    "conversion": "#CFD8DC"  # pastel grey
-}
+from .palette import EDGE_COLOR, FALLBACK_COLOR, PASTEL_COLORS
+
+COLORS = PASTEL_COLORS
 
 KINDS = {"clifford_plus_rot", "clifford_prefix_rot_tail"}
 
@@ -263,13 +260,28 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
 
         bottom = 0.0
         if tab > 0:
-            ax.bar(0, tab, width, color=COLORS["tableau"], edgecolor="black")
+            ax.bar(0, tab, width, color=COLORS["tableau"], edgecolor=EDGE_COLOR)
             bottom += tab
         if conv > 0:
-            ax.bar(0, conv, width, bottom=bottom, color=COLORS["conversion"], edgecolor="black", hatch="//")
+            ax.bar(
+                0,
+                conv,
+                width,
+                bottom=bottom,
+                color=COLORS["conversion"],
+                edgecolor=EDGE_COLOR,
+                hatch="//",
+            )
             bottom += conv
         if tail > 0:
-            ax.bar(0, tail, width, bottom=bottom, color=COLORS.get(tail_method, COLORS["sv"]), edgecolor="black")
+            ax.bar(
+                0,
+                tail,
+                width,
+                bottom=bottom,
+                color=COLORS.get(tail_method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+            )
 
         total_quasar = tab + conv + tail
         if total_quasar > 0 and np.isfinite(base_time) and base_time > 0:
@@ -286,7 +298,14 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
             )
 
         if np.isfinite(base_time) and base_time > 0:
-            ax.bar(1, base_time, width, color=COLORS.get(base_method, COLORS["sv"]), edgecolor="black", alpha=0.9)
+            ax.bar(
+                1,
+                base_time,
+                width,
+                color=COLORS.get(base_method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+                alpha=0.9,
+            )
 
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["QuASAr", "Baseline"])
@@ -312,17 +331,41 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
 
     legend_handles = []
     if tableau_used:
-        legend_handles.append(mpatches.Patch(color=COLORS["tableau"], edgecolor="black", label="QuASAr: tableau"))
+        legend_handles.append(
+            mpatches.Patch(
+                color=COLORS["tableau"], edgecolor=EDGE_COLOR, label="QuASAr: tableau"
+            )
+        )
     if conversion_used:
-        legend_handles.append(mpatches.Patch(color=COLORS["conversion"], edgecolor="black", hatch="//", label="QuASAr: conversion"))
+        legend_handles.append(
+            mpatches.Patch(
+                color=COLORS["conversion"],
+                edgecolor=EDGE_COLOR,
+                hatch="//",
+                label="QuASAr: conversion",
+            )
+        )
     for method in sorted(tail_methods_used):
         method_label = str(method).upper()
         label = f"QuASAr tail: {method_label}"
-        legend_handles.append(mpatches.Patch(color=COLORS.get(method, COLORS["sv"]), edgecolor="black", label=label))
+        legend_handles.append(
+            mpatches.Patch(
+                color=COLORS.get(method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+                label=label,
+            )
+        )
     for method in sorted(base_methods_used):
         method_label = str(method).upper()
         label = f"Baseline: {method_label}"
-        legend_handles.append(mpatches.Patch(color=COLORS.get(method, COLORS["sv"]), edgecolor="black", alpha=0.9, label=label))
+        legend_handles.append(
+            mpatches.Patch(
+                color=COLORS.get(method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+                alpha=0.9,
+                label=label,
+            )
+        )
 
     if legend_handles:
         fig.legend(handles=legend_handles, loc="upper right")

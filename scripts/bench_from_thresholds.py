@@ -14,6 +14,11 @@ from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
+from plots.palette import apply_paper_style
+
+
+apply_paper_style()
+
 def load_thresholds(path: str) -> Dict[str, Any]:
     with open(path, "r") as f:
         data = json.load(f)

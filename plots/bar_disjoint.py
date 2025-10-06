@@ -9,15 +9,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-QUASAR_COLOR = "#7E57C2"
+from .palette import EDGE_COLOR, FALLBACK_COLOR, PASTEL_COLORS
+
+QUASAR_COLOR = PASTEL_COLORS["tableau"]
 BASELINE_COLORS = {
-    "sv": "#1E88E5",
-    "statevector": "#1E88E5",
-    "state_vector": "#1E88E5",
-    "dd": "#F4511E",
-    "decisiondiagram": "#F4511E",
-    "decision_diagram": "#F4511E",
-    "tableau": "#4CAF50",
+    "sv": PASTEL_COLORS["sv"],
+    "statevector": PASTEL_COLORS["sv"],
+    "state_vector": PASTEL_COLORS["sv"],
+    "dd": PASTEL_COLORS["dd"],
+    "decisiondiagram": PASTEL_COLORS["dd"],
+    "decision_diagram": PASTEL_COLORS["dd"],
+    "tableau": PASTEL_COLORS["tableau"],
 }
 
 CASE_KIND = "disjoint_preps_plus_tails"
@@ -146,10 +148,24 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
     width = 0.38
 
     plt.figure(figsize=(max(8, len(labels) * 1.4), 5.5))
-    plt.bar(x - width / 2, quasar_times, width, label="QuASAr (parallel disjoint)", color=QUASAR_COLOR)
+    plt.bar(
+        x - width / 2,
+        quasar_times,
+        width,
+        label="QuASAr (parallel disjoint)",
+        color=QUASAR_COLOR,
+        edgecolor=EDGE_COLOR,
+    )
 
-    baseline_colors = [BASELINE_COLORS.get(m, "#9E9E9E") for m in baseline_methods]
-    plt.bar(x + width / 2, baseline_times, width, color=baseline_colors)
+    baseline_colors = [BASELINE_COLORS.get(m, FALLBACK_COLOR) for m in baseline_methods]
+    plt.bar(
+        x + width / 2,
+        baseline_times,
+        width,
+        color=baseline_colors,
+        edgecolor=EDGE_COLOR,
+        alpha=0.9,
+    )
 
     plt.xticks(x, labels, rotation=25, ha="right")
     plt.ylabel("Time (s)")
@@ -158,10 +174,26 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
     import matplotlib.patches as mpatches
 
     legend_handles = [
-        mpatches.Patch(color=QUASAR_COLOR, label="QuASAr (parallel disjoint)"),
-        mpatches.Patch(color=BASELINE_COLORS["sv"], label="Baseline: SV"),
-        mpatches.Patch(color=BASELINE_COLORS["dd"], label="Baseline: DD"),
-        mpatches.Patch(color=BASELINE_COLORS["tableau"], label="Baseline: Tableau"),
+        mpatches.Patch(
+            color=QUASAR_COLOR,
+            edgecolor=EDGE_COLOR,
+            label="QuASAr (parallel disjoint)",
+        ),
+        mpatches.Patch(
+            color=BASELINE_COLORS["sv"],
+            edgecolor=EDGE_COLOR,
+            label="Baseline: SV",
+        ),
+        mpatches.Patch(
+            color=BASELINE_COLORS["dd"],
+            edgecolor=EDGE_COLOR,
+            label="Baseline: DD",
+        ),
+        mpatches.Patch(
+            color=BASELINE_COLORS["tableau"],
+            edgecolor=EDGE_COLOR,
+            label="Baseline: Tableau",
+        ),
     ]
     plt.legend(handles=legend_handles, loc="best")
     plt.tight_layout()
