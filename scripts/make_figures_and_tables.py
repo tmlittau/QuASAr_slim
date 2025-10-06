@@ -24,13 +24,15 @@ SUITES_DIR = ROOT / "suites"
 # Utilities
 
 
-def _run_command(cmd: Sequence[str], *, dry_run: bool = False) -> None:
+def _run_command(
+    cmd: Sequence[str], *, dry_run: bool = False, timeout: Optional[float] = None
+) -> None:
     """Run *cmd*, printing it beforehand."""
 
     print("[make_figures] $", " ".join(cmd))
     if dry_run:
         return
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=timeout)
 
 
 def _has_suite_results(suite_dir: Path) -> bool:
@@ -51,13 +53,14 @@ def _ensure_suite(
     runner_args: Sequence[str],
     force: bool,
     dry_run: bool,
+    timeout: Optional[float],
 ) -> None:
     """Run the suite if results are missing or ``force`` is True."""
 
     if force or not _has_suite_results(suite_dir):
         suite_dir.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, str(SUITES_DIR / script_name), *runner_args]
-        _run_command(cmd, dry_run=dry_run)
+        _run_command(cmd, dry_run=dry_run, timeout=timeout)
     else:
         print(f"[make_figures] Reusing existing results in {suite_dir}")
 
@@ -223,6 +226,7 @@ def cmd_hybrid(args: argparse.Namespace) -> None:
         runner_args=runner_args,
         force=args.force,
         dry_run=args.dry_run,
+        timeout=args.timeout,
     )
 
     if args.dry_run:
@@ -301,6 +305,7 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         runner_args=runner_args,
         force=args.force,
         dry_run=args.dry_run,
+        timeout=args.timeout,
     )
 
     if args.dry_run:
@@ -434,6 +439,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parent.add_argument("--force", action="store_true", help="Re-run suites even if results already exist")
     parent.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
+    parent.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Abort suite runs after the given number of seconds",
+    )
 
     parser = argparse.ArgumentParser(
         description="Generate QuASAr paper figures and tables",

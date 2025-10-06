@@ -108,6 +108,8 @@ Useful flags:
 - `--results-dir` to reuse an existing suite output directory (defaults to
   `suite_hybrid`).
 - `--force` to re-run the suite even when JSON results are already present.
+- `--timeout` to abort the suite runner if it exceeds the specified number of
+  seconds (useful in CI to avoid stalls).
 - Planner controls (`--max-ram-gb`, `--conv-factor`, `--twoq-factor`) and
   baseline calibration (`--sv-ampops-per-sec`) are forwarded to
   `suites/run_hybrid_suite.py`.
@@ -160,6 +162,8 @@ Key options:
   rotations so you capture the mixed Clifford + rotation-tail experiment.
 - `--tail-depth`, `--angle-scale`, `--sparsity`, and `--bandwidth` refine the
   diagonal tail shape when present.
+- `--timeout` mirrors the hybrid workflow and stops the suite if it runs longer
+  than the configured limit.
 - As with the hybrid workflow, planner and baseline tuning flags are passed
   through to `suites/run_disjoint_suite.py`.
 
