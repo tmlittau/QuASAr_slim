@@ -48,7 +48,7 @@ The `suites/` directory contains ready-to-run experiments that write per-case
 JSON files and an `index.json` summary. Example usage:
 
 ```bash
-python suites/run_hybrid_suite.py --out-dir suite_hybrid --num-qubits 64 96 --block-size 8
+python suites/run_hybrid_suite.py --out-dir suite_hybrid --num-qubits 24 28 --block-size 8
 python suites/run_dd_friendly_suite.py --out-dir suite_dd --n 16 24 32 --depth 100 200
 python suites/run_disjoint_suite.py --out-dir suite_disjoint --n 32 48 --blocks 2 4 \
     --prep mixed --tail-kind mixed --tail-depth 20
@@ -61,21 +61,89 @@ block preparation (`--prep`), tail type (`--tail-kind`), and per-block tail
 depth/angles so you can probe GHZ or W structures with optional Clifford or
 diagonal tails.
 
-To orchestrate multiple suites and reproduce the paper figures in one shot, use
-`scripts/make_figures_and_tables.py`:
+### Figure and table pipeline
+
+`scripts/make_figures_and_tables.py` orchestrates the full benchmarking loop:
+it checks for existing suite outputs (unless `--force` is provided), launches
+the runners when necessary, and invokes the matching plotters. The helper
+exposes independent sub-commands so you can re-run individual figures without
+touching the others.
+
+Run `--help` to inspect the available knobs:
 
 ```bash
-python scripts/make_figures_and_tables.py --workspace paper_artifacts
+python scripts/make_figures_and_tables.py --help
 ```
 
-The script runs the hybrid, DD-friendly, and disjoint suites (unless skipped via
-`--skip-*` flags), produces stacked bar plots in the workspace directory, and
-writes a Markdown summary table aggregating the index files. Use `--*-extra` to
-forward additional CLI arguments to individual suites. For the disjoint command,
-the helper also invokes `plots/bar_disjoint.py` so you receive a side-by-side bar
-chart comparing the parallel QuASAr wall time against the fastest whole-circuit
-baseline (statevector, decision diagram, or tableau, colour-coded blue/orange/
-green).
+#### Hybrid benchmark (stacked runtime breakdown)
+
+The `hybrid` sub-command sweeps the stitched and hybrid-style circuits and
+builds the stacked bar chart comparing the QuASAr split against the fastest
+whole-circuit baseline:
+
+```bash
+# Generate hybrid benchmark results and plot
+python scripts/make_figures_and_tables.py hybrid \
+    --n 24 28 \
+    --block-size 8 \
+    --out plots/hybrid_stacked.png
+```
+
+Useful flags:
+
+- `--results-dir` to reuse an existing suite output directory (defaults to
+  `suite_hybrid`).
+- `--force` to re-run the suite even when JSON results are already present.
+- Planner controls (`--max-ram-gb`, `--conv-factor`, `--twoq-factor`) and
+  baseline calibration (`--sv-ampops-per-sec`) are forwarded to
+  `suites/run_hybrid_suite.py`.
+
+#### Disjoint benchmark (parallel sub-circuits)
+
+The `disjoint` sub-command covers the multi-block disjoint circuits with optional
+Clifford/diagonal (random-rotation) tails and emits the QuASAr vs baseline bar
+chart:
+
+```bash
+# Parallel disjoint benchmark with mixed Clifford + random rotation tails
+python scripts/make_figures_and_tables.py disjoint \
+    --n 32 48 \
+    --blocks 2 4 \
+    --prep mixed \
+    --tail-kind mixed \
+    --tail-depth 20 \
+    --angle-scale 0.1 \
+    --sparsity 0.05 \
+    --bandwidth 2 \
+    --out plots/disjoint_runtime.png
+```
+
+Key options:
+
+- `--prep` selects the per-block preparation routine (`ghz`, `w`, or `mixed` to
+  alternate them).
+- `--tail-kind` chooses the tail circuit (`clifford`, `diag`, `mixed`, or
+  `none`). The default `mixed` alternates Clifford layers with random diagonal
+  rotations so you capture the mixed Clifford + rotation-tail experiment.
+- `--tail-depth`, `--angle-scale`, `--sparsity`, and `--bandwidth` refine the
+  diagonal tail shape when present.
+- As with the hybrid workflow, planner and baseline tuning flags are passed
+  through to `suites/run_disjoint_suite.py`.
+
+#### Consolidated tables
+
+Once the suites have finished you can summarise them into CSV or Markdown using
+the `table` sub-command:
+
+```bash
+python scripts/make_figures_and_tables.py table \
+    --suite-dir suite_hybrid suite_disjoint \
+    --out docs/summary.md
+```
+
+The helper inspects each suite directory, extracts the recorded wall-clock
+times, and writes a tidy table containing the QuASAr runtime alongside the best
+whole-circuit baseline for every case.
 
 ## Plotting utilities
 

@@ -435,12 +435,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     disjoint.add_argument("--n", type=int, nargs="+", required=True, help="Numbers of qubits to sweep")
     disjoint.add_argument("--blocks", type=int, nargs="+", required=True, help="Block counts to evaluate")
-    disjoint.add_argument("--prep", type=str, default=None, help="Preparation routine kind override")
-    disjoint.add_argument("--tail-kind", type=str, default=None, help="Tail circuit kind override")
-    disjoint.add_argument("--tail-depth", type=int, default=None, help="Tail depth override")
-    disjoint.add_argument("--angle-scale", type=float, default=None, help="Tail rotation angle scale")
-    disjoint.add_argument("--sparsity", type=float, default=None, help="Tail sparsity for diagonal layers")
-    disjoint.add_argument("--bandwidth", type=int, default=None, help="Tail bandwidth for diagonal layers")
+    disjoint.add_argument(
+        "--prep",
+        type=str,
+        default="mixed",
+        help="Preparation routine kind override (default mixes GHZ and W blocks)",
+    )
+    disjoint.add_argument(
+        "--tail-kind",
+        type=str,
+        default="mixed",
+        help=(
+            "Tail circuit kind override; use 'mixed' for alternating Clifford and "
+            "random-rotation (diagonal) tails"
+        ),
+    )
+    disjoint.add_argument(
+        "--tail-depth", type=int, default=20, help="Tail depth override (layers per block)"
+    )
+    disjoint.add_argument(
+        "--angle-scale",
+        type=float,
+        default=0.1,
+        help="Tail rotation angle scale for diagonal tails",
+    )
+    disjoint.add_argument(
+        "--sparsity",
+        type=float,
+        default=0.05,
+        help="Tail sparsity for diagonal layers",
+    )
+    disjoint.add_argument(
+        "--bandwidth",
+        type=int,
+        default=2,
+        help="Tail bandwidth for diagonal layers",
+    )
     disjoint.add_argument("--seed", type=int, default=None, help="Random seed for circuit construction")
     disjoint.add_argument("--out", type=str, required=True, help="Path to the output bar chart file")
     disjoint.add_argument("--title", type=str, default=None, help="Optional figure title override")
