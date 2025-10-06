@@ -1,7 +1,8 @@
 
-qiskit>=0.45
-qiskit-aer>=0.13
-mqt.ddsim>=2.2
-stim>=1.12
-numpy>=1.23
-matplotlib>=3.7
+qiskit>=2.1.2
+qiskit-aer>=0.17.1
+mqt-core>=3.2.1
+mqt.ddsim>=2.0.0
+stim>=1.15.0
+numpy
+matplotlib
