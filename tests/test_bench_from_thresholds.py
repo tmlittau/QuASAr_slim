@@ -57,6 +57,7 @@ def test_run_from_thresholds_invokes_baselines(tmp_path: Path, tmp_thresholds: d
             twoq_factor=2.0,
             max_ram_gb=1.0,
             sv_ampops_per_sec=None,
+            baseline_timeout_s=None,
             log=logging.getLogger("test"),
         )
 
