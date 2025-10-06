@@ -150,3 +150,20 @@ def test_run_backend_reports_timeout_estimate(monkeypatch):
     assert result["ok"] is False
     assert result["error"].startswith("Timeout")
     assert "estimate" in result
+
+
+def test_run_backend_reports_memory_estimate(monkeypatch):
+    class _OOMBackend(runner.StatevectorBackend):
+        def run(self, circuit):  # type: ignore[override]
+            raise MemoryError("out of memory")
+
+    monkeypatch.setattr(runner, "StatevectorBackend", _OOMBackend)
+
+    result = runner._run_backend("sv", _FakeCircuit(), timeout_s=None, sv_ampops_per_sec=100.0)
+
+    assert result["backend"] == "sv"
+    assert result["ok"] is False
+    assert result["error"].startswith("MemoryError")
+    assert "estimate" in result
+    assert result.get("wall_s_estimated") == result["estimate"].get("time_est_sec")
+    assert result.get("mem_bytes_estimated") == result["estimate"].get("mem_bytes")

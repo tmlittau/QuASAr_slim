@@ -267,7 +267,10 @@ def cmd_hybrid(args: argparse.Namespace) -> None:
 
 
 def cmd_disjoint(args: argparse.Namespace) -> None:
-    from plots.bar_disjoint import make_plot as make_disjoint_bars
+    from plots.bar_disjoint import (
+        make_memory_plot as make_disjoint_memory_bars,
+        make_plot as make_disjoint_bars,
+    )
 
     suite_dir = Path(args.results_dir or "suite_disjoint").resolve()
     out_path = Path(args.out).resolve()
@@ -318,6 +321,14 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
 
     print(f"[make_figures] Building disjoint bar chart -> {out_path}")
     make_disjoint_bars(str(suite_dir), out=str(out_path), title=args.title)
+
+    if out_path.suffix:
+        memory_out = out_path.with_name(f"{out_path.stem}_memory{out_path.suffix}")
+    else:
+        memory_out = out_path.with_name(f"{out_path.name}_memory")
+
+    print(f"[make_figures] Building disjoint memory chart -> {memory_out}")
+    make_disjoint_memory_bars(str(suite_dir), out=str(memory_out), title=args.title)
 
 
 @dataclass

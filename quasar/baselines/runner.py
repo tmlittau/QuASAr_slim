@@ -176,6 +176,7 @@ def _run_backend(
                 "statevector_len": payload.get("statevector_len"),
                 "elapsed_s": t1 - t0,
                 "wall_s_measured": t1 - t0,
+                "mem_bytes": 256 * 1024 * 1024,
                 "error": payload.get("error"),
             }
 
@@ -186,7 +187,7 @@ def _run_backend(
                     need = estimate_sv_bytes(getattr(circuit, "num_qubits", 0))
                     if need > cap:
                         est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
-                        return {
+                        result = {
                             "ok": False,
                             "backend": "sv",
                             "error": f"SV exceeds cap ({need} > {cap} bytes)",
@@ -194,6 +195,13 @@ def _run_backend(
                             "wall_s_measured": 0.0,
                             "estimate": est,
                         }
+                        time_est = est.get("time_est_sec")
+                        if time_est is not None:
+                            result["wall_s_estimated"] = float(time_est)
+                        mem_est = est.get("mem_bytes")
+                        if mem_est is not None:
+                            result["mem_bytes_estimated"] = int(mem_est)
+                        return result
                 out = StatevectorBackend().run(circuit)
                 t1 = perf_counter()
                 return {
@@ -202,6 +210,7 @@ def _run_backend(
                     "statevector_len": None if out is None else len(out),
                     "elapsed_s": t1 - t0,
                     "wall_s_measured": t1 - t0,
+                    "mem_bytes": estimate_sv_bytes(getattr(circuit, "num_qubits", 0)),
                     "error": None if out is not None else "SV failed (backend returned None)",
                 }
             else:  # tableau
@@ -211,7 +220,7 @@ def _run_backend(
                 if out is None:
                     est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
                     est["note"] = "Not Clifford; tableau inapplicable. SV worst-case bound provided."
-                    return {
+                    result = {
                         "ok": False,
                         "backend": "tableau",
                         "elapsed_s": 0.0,
@@ -219,12 +228,20 @@ def _run_backend(
                         "error": "Tableau failed (non-Clifford)",
                         "estimate": est,
                     }
+                    mem_est = est.get("mem_bytes")
+                    if mem_est is not None:
+                        result["mem_bytes_estimated"] = int(mem_est)
+                    time_est = est.get("time_est_sec")
+                    if time_est is not None:
+                        result["wall_s_estimated"] = float(time_est)
+                    return result
                 return {
                     "ok": True,
                     "backend": "tableau",
                     "statevector_len": len(out),
                     "elapsed_s": t1 - t0,
                     "wall_s_measured": t1 - t0,
+                    "mem_bytes": 64 * 1024 * 1024,
                     "error": None,
                 }
     except TimeoutError:
@@ -232,7 +249,7 @@ def _run_backend(
         est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
         est["note"] = "Baseline execution timed out; theoretical estimate used."
         LOG.warning("Baseline backend=%s timed out after %ss; returning estimate", which, timeout_s)
-        return {
+        result = {
             "ok": False,
             "backend": which,
             "error": f"Timeout after {timeout_s}s",
@@ -240,10 +257,42 @@ def _run_backend(
             "wall_s_measured": t1 - t0,
             "estimate": est,
         }
+        time_est = est.get("time_est_sec")
+        if time_est is not None:
+            result["wall_s_estimated"] = float(time_est)
+        mem_est = est.get("mem_bytes")
+        if mem_est is not None:
+            result["mem_bytes_estimated"] = int(mem_est)
+        return result
+    except MemoryError as e:
+        t1 = perf_counter()
+        est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
+        est["note"] = "Baseline ran out of memory; theoretical estimate used."
+        LOG.warning("Baseline backend=%s raised MemoryError; returning estimate", which)
+        result = {
+            "ok": False,
+            "backend": which,
+            "error": f"MemoryError: {e}",
+            "elapsed_s": t1 - t0,
+            "wall_s_measured": t1 - t0,
+            "estimate": est,
+        }
+        time_est = est.get("time_est_sec")
+        if time_est is not None:
+            result["wall_s_estimated"] = float(time_est)
+        mem_est = est.get("mem_bytes")
+        if mem_est is not None:
+            result["mem_bytes_estimated"] = int(mem_est)
+        return result
     except Exception as e:
         t1 = perf_counter()
-        return {"ok": False, "backend": which, "error": f"{type(e).__name__}: {e}",
-                "elapsed_s": t1 - t0, "wall_s_measured": t1 - t0}
+        return {
+            "ok": False,
+            "backend": which,
+            "error": f"{type(e).__name__}: {e}",
+            "elapsed_s": t1 - t0,
+            "wall_s_measured": t1 - t0,
+        }
 
 def run_single_baseline(circuit, which: Which, *, per_partition: bool = False,
                         max_ram_gb: float | None = None, sv_ampops_per_sec: float | None = None,
