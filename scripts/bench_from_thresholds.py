@@ -5,6 +5,7 @@ import argparse
 import json
 import logging
 import os
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 from benchmarks.hybrid import clifford_prefix_rot_tail
@@ -25,9 +26,19 @@ def pick_meta_or_default(meta: Dict[str, Any], key: str, default):
     val = params.get(key)
     return val if val is not None else default
 
-def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], out_dir: str,
-                        angle_scale: Optional[float], conv_factor: Optional[float], twoq_factor: Optional[float],
-                        max_ram_gb: float, sv_ampops_per_sec: Optional[float], log: logging.Logger) -> None:
+def run_from_thresholds(
+    thr_json: Dict[str, Any],
+    *,
+    cutoff: Optional[float],
+    out_dir: str,
+    angle_scale: Optional[float],
+    conv_factor: Optional[float],
+    twoq_factor: Optional[float],
+    max_ram_gb: float,
+    sv_ampops_per_sec: Optional[float],
+    baseline_timeout_s: Optional[float],
+    log: logging.Logger,
+) -> None:
     meta = thr_json.get("meta", {})
     if cutoff is None:
         cutoffs = sorted({float(r["cutoff"]) for r in thr_json["records"] if r.get("cutoff") is not None})
@@ -50,6 +61,7 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
         depth = int(r["first_depth"])
         log.info("Running threshold case: n=%d depth=%d cutoff=%.2f", n, depth, cutoff)
 
+        build_start = perf_counter()
         circ = clifford_prefix_rot_tail(
             num_qubits=n,
             depth=depth,
@@ -57,10 +69,18 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
             angle_scale=angle_scale,
             seed=42,
         )
+        log.info("Constructed circuit in %.2fs", perf_counter() - build_start)
 
+        log.info("Analyzing circuit (n=%d, depth=%d)", n, depth)
+        analyze_start = perf_counter()
         a = analyze(circ)
+        log.info("Analyze completed in %.2fs", perf_counter() - analyze_start)
+
         cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
+        log.info("Planning SSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)", max_ram_gb, conv_factor, twoq_factor)
+        plan_start = perf_counter()
         ssd = plan(a.ssd, cfg)
+        log.info("Plan completed in %.2fs", perf_counter() - plan_start)
         partition_summaries: List[str] = []
         for node in ssd.partitions:
             backend = node.backend or "unassigned"
@@ -95,10 +115,40 @@ def run_from_thresholds(thr_json: Dict[str, Any], *, cutoff: Optional[float], ou
         log.info("Planner produced %d partitions", len(ssd.partitions))
         for summary in partition_summaries:
             log.info("  %s", summary)
+        log.info("Executing SSD (max_ram_gb=%.1f)", max_ram_gb)
+        exec_start = perf_counter()
         exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=max_ram_gb))
+        exec_elapsed = perf_counter() - exec_start
+        log.info("Execution completed in %.2fs", exec_elapsed)
 
-        bl = run_baselines(circ, which=["tableau","sv","dd"], per_partition=False,
-                           max_ram_gb=max_ram_gb, sv_ampops_per_sec=sv_ampops_per_sec)
+        timeout_desc = (
+            f"{baseline_timeout_s:.1f}s"
+            if baseline_timeout_s is not None and baseline_timeout_s > 0
+            else "disabled"
+        )
+        log.info("Running baselines with timeout %s", timeout_desc)
+        baseline_start = perf_counter()
+        bl = run_baselines(
+            circ,
+            which=["tableau", "sv", "dd"],
+            per_partition=False,
+            max_ram_gb=max_ram_gb,
+            sv_ampops_per_sec=sv_ampops_per_sec,
+            timeout_s=baseline_timeout_s,
+            log=log,
+        )
+        baseline_elapsed = perf_counter() - baseline_start
+        log.info("Baselines completed in %.2fs", baseline_elapsed)
+        for entry in bl.get("entries", []):
+            res = entry.get("result", {})
+            wall = res.get("wall_s_measured", res.get("elapsed_s"))
+            log.info(
+                "  baseline=%s ok=%s wall_s=%s error=%s",
+                entry.get("which"),
+                res.get("ok"),
+                None if wall is None else f"{wall:.2f}",
+                res.get("error"),
+            )
 
         rec_out = {
             "case": {"kind": "clifford_prefix_rot_tail", "params": {"num_qubits": n, "depth": depth, "cutoff": cutoff, "angle_scale": angle_scale}},
@@ -139,6 +189,8 @@ def main():
     ap.add_argument("--twoq-factor", type=float, default=None, help="Override twoq_factor (default: use thresholds meta or 4.0)")
     ap.add_argument("--max-ram-gb", type=float, default=64.0)
     ap.add_argument("--sv-ampops-per-sec", type=float, default=None)
+    ap.add_argument("--baseline-timeout-s", type=float, default=None,
+                    help="Timeout in seconds for each baseline backend (default: no timeout)")
     ap.add_argument("--log-level", type=str, default="INFO")
     args = ap.parse_args()
 
@@ -147,9 +199,18 @@ def main():
     log = logging.getLogger("bench_from_thresholds")
 
     thr = load_thresholds(args.thresholds)
-    run_from_thresholds(thr, cutoff=args.cutoff, out_dir=args.out_dir,
-                        angle_scale=args.angle_scale, conv_factor=args.conv_factor, twoq_factor=args.twoq_factor,
-                        max_ram_gb=args.max_ram_gb, sv_ampops_per_sec=args.sv_ampops_per_sec, log=log)
+    run_from_thresholds(
+        thr,
+        cutoff=args.cutoff,
+        out_dir=args.out_dir,
+        angle_scale=args.angle_scale,
+        conv_factor=args.conv_factor,
+        twoq_factor=args.twoq_factor,
+        max_ram_gb=args.max_ram_gb,
+        sv_ampops_per_sec=args.sv_ampops_per_sec,
+        baseline_timeout_s=args.baseline_timeout_s,
+        log=log,
+    )
 
 if __name__ == "__main__":
     main()
