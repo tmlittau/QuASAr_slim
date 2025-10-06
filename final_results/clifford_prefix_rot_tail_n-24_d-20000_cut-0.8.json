@@ -1,0 +1,202 @@
+{
+  "case": {
+    "kind": "clifford_prefix_rot_tail",
+    "params": {
+      "num_qubits": 24,
+      "depth": 20000,
+      "cutoff": 0.8,
+      "angle_scale": 0.1
+    }
+  },
+  "planner": {
+    "conv_factor": 20000.0,
+    "twoq_factor": 4.0
+  },
+  "quasar": {
+    "wall_elapsed_s": 823.1386830806732,
+    "execution": {
+      "results": [
+        {
+          "partition": 0,
+          "status": "ok",
+          "backend": "tableau",
+          "elapsed_s": 155.41624999046326,
+          "wall_s_measured": 155.41624999046326,
+          "statevector_len": 16777216,
+          "chain_id": "p0_hybrid",
+          "seq_index": 0,
+          "total_gates": 576000,
+          "num_qubits": 24,
+          "want_statevector": true,
+          "mem_bytes": 268435456,
+          "done_gates": 576000
+        },
+        {
+          "partition": 1,
+          "status": "ok",
+          "backend": "sv",
+          "elapsed_s": 666.609228849411,
+          "wall_s_measured": 666.609228849411,
+          "statevector_len": null,
+          "chain_id": "p0_hybrid",
+          "seq_index": 1,
+          "total_gates": 144000,
+          "num_qubits": 24,
+          "want_statevector": false,
+          "mem_bytes": 268435456,
+          "done_gates": 144000
+        }
+      ],
+      "meta": {
+        "max_ram_gb": 60.0,
+        "max_workers": 4,
+        "wall_elapsed_s": 823.1386830806732
+      }
+    },
+    "analysis": {
+      "global": {
+        "num_qubits": 24,
+        "num_gates": 720000,
+        "clifford_gates": 624000,
+        "two_qubit_gates": 240000,
+        "t_count": 0,
+        "rotation_count": 96000,
+        "is_clifford": false,
+        "depth": 40000
+      },
+      "ssd": {
+        "meta": {
+          "total_qubits": 24,
+          "components": 1,
+          "planner": {
+            "max_ram_gb": 60.0,
+            "prefer_dd": true,
+            "hybrid_clifford_tail": true,
+            "conv_amp_ops_factor": 20000.0,
+            "sv_twoq_factor": 4.0
+          }
+        },
+        "partitions": [
+          {
+            "id": 0,
+            "qubits": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23
+            ],
+            "metrics": {
+              "num_qubits": 24,
+              "num_gates": 576000,
+              "clifford_gates": 576000,
+              "two_qubit_gates": 192000,
+              "t_count": 0,
+              "rotation_count": 0,
+              "is_clifford": true,
+              "depth": 32000
+            },
+            "backend": "tableau",
+            "meta": {
+              "chain_id": "p0_hybrid",
+              "seq_index": 0,
+              "planner_reason": "hybrid split@576000; conv=20000.0, tail=288000.0, hybrid=308000.0 < sv=1440000.0 (ampops/2^n)"
+            },
+            "fingerprint": "3141bb5d219c649f",
+            "num_qubits": 24,
+            "depth": 32000
+          },
+          {
+            "id": 1,
+            "qubits": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23
+            ],
+            "metrics": {
+              "num_qubits": 24,
+              "num_gates": 144000,
+              "clifford_gates": 48000,
+              "two_qubit_gates": 48000,
+              "t_count": 0,
+              "rotation_count": 96000,
+              "is_clifford": false,
+              "depth": 8000
+            },
+            "backend": "sv",
+            "meta": {
+              "chain_id": "p0_hybrid",
+              "seq_index": 1,
+              "planner_reason": "hybrid tail; sv_tail=288000.0 (ampops/2^n)"
+            },
+            "fingerprint": "da358c6819eedcaf",
+            "num_qubits": 24,
+            "depth": 8000
+          }
+        ]
+      }
+    }
+  },
+  "baselines": {
+    "per_partition": false,
+    "entries": [
+      {
+        "mode": "whole",
+        "which": "sv",
+        "result": {
+          "ok": false,
+          "backend": "sv",
+          "error": "Timeout after 1800.0s",
+          "elapsed_s": 3421.0248037659994,
+          "wall_s_measured": 3421.0248037659994,
+          "estimate": {
+            "model": "SV_OPS",
+            "amp_ops": 24159191040000,
+            "mem_bytes": 268435456,
+            "note": "Baseline execution timed out; theoretical estimate used."
+          }
+        }
+      }
+    ]
+  }
+}
