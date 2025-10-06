@@ -9,12 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-COLORS = {
-    "tableau": "#4CAF50",
-    "sv": "#1E88E5",
-    "dd": "#F4511E",
-    "conversion": "#9E9E9E"
-}
+from .palette import EDGE_COLOR, FALLBACK_COLOR, PASTEL_COLORS
+
+COLORS = PASTEL_COLORS
 
 KINDS = {"clifford_plus_rot", "clifford_prefix_rot_tail", "dd_friendly_prefix_diag_tail"}
 
@@ -156,25 +153,62 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
     x = np.arange(N)
     width = 0.42
 
-    plt.figure(figsize=(max(8, N*1.3), 5))
-    plt.bar(x - width/2, t_tab, width, label="QuASAr: tableau", color=COLORS["tableau"])
-    plt.bar(x - width/2, t_conv, width, bottom=t_tab, label="QuASAr: conversion", color=COLORS["conversion"], hatch='//', edgecolor='black')
+    plt.figure(figsize=(max(8, N * 1.3), 5))
+    plt.bar(
+        x - width / 2,
+        t_tab,
+        width,
+        label="QuASAr: tableau",
+        color=COLORS["tableau"],
+        edgecolor=EDGE_COLOR,
+    )
+    plt.bar(
+        x - width / 2,
+        t_conv,
+        width,
+        bottom=t_tab,
+        label="QuASAr: conversion",
+        color=COLORS["conversion"],
+        hatch="//",
+        edgecolor=EDGE_COLOR,
+    )
     bottoms = np.array(t_tab) + np.array(t_conv)
-    tail_colors = [COLORS.get(m, COLORS["sv"]) for m in tail_methods]
-    plt.bar(x - width/2, t_tail, width, bottom=bottoms, label="QuASAr: tail", color=tail_colors)
+    tail_colors = [COLORS.get(m, FALLBACK_COLOR) for m in tail_methods]
+    plt.bar(
+        x - width / 2,
+        t_tail,
+        width,
+        bottom=bottoms,
+        label="QuASAr: tail",
+        color=tail_colors,
+        edgecolor=EDGE_COLOR,
+    )
 
-    base_colors = [COLORS.get(m, COLORS["sv"]) for m in base_methods]
-    plt.bar(x + width/2, base_times, width, label="Baseline (whole circuit)", color=base_colors, alpha=0.9)
+    base_colors = [COLORS.get(m, FALLBACK_COLOR) for m in base_methods]
+    plt.bar(
+        x + width / 2,
+        base_times,
+        width,
+        label="Baseline (whole circuit)",
+        color=base_colors,
+        edgecolor=EDGE_COLOR,
+        alpha=0.9,
+    )
 
     plt.xticks(x, labels, rotation=25, ha='right')
     plt.ylabel("Time (s)")
     plt.title(title or "QuASAr (stacked) vs whole-circuit baseline")
     import matplotlib.patches as mpatches
     legend_handles = [
-        mpatches.Patch(color=COLORS["tableau"], label="QuASAr: tableau"),
-        mpatches.Patch(color=COLORS["conversion"], label="QuASAr: conversion", hatch='//', edgecolor='black'),
-        mpatches.Patch(color=COLORS["sv"], label="Tail/Baseline: SV"),
-        mpatches.Patch(color=COLORS["dd"], label="Tail/Baseline: DD"),
+        mpatches.Patch(color=COLORS["tableau"], edgecolor=EDGE_COLOR, label="QuASAr: tableau"),
+        mpatches.Patch(
+            color=COLORS["conversion"],
+            edgecolor=EDGE_COLOR,
+            hatch="//",
+            label="QuASAr: conversion",
+        ),
+        mpatches.Patch(color=COLORS["sv"], edgecolor=EDGE_COLOR, label="Tail/Baseline: SV"),
+        mpatches.Patch(color=COLORS["dd"], edgecolor=EDGE_COLOR, label="Tail/Baseline: DD"),
     ]
     plt.legend(handles=legend_handles, loc="best")
     plt.tight_layout()

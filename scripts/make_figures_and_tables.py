@@ -16,8 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from plots.palette import apply_paper_style
+
 ROOT = Path(__file__).resolve().parents[1]
 SUITES_DIR = ROOT / "suites"
+
+
+apply_paper_style()
 
 
 # ---------------------------------------------------------------------------
