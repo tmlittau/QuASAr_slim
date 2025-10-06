@@ -99,6 +99,9 @@ class StatevectorBackend:
 
         try:
             result = simulator.run(executable, **run_args).result()
+        except TimeoutError:
+            # Propagate timeout so the caller can convert it into an estimate
+            raise
         except Exception:
             LOGGER.exception("qiskit-aer failed while executing the partition.")
             return None
@@ -111,6 +114,8 @@ class StatevectorBackend:
 
         try:
             state = result.get_statevector(executable)
+        except TimeoutError:
+            raise
         except Exception:
             LOGGER.exception("Unable to fetch statevector result from qiskit-aer.")
             return None
