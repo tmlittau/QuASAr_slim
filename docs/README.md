@@ -163,6 +163,44 @@ All plotters now live under `plots/`:
 Each plotter accepts `--suite-dir` (directory with suite JSON files) and `--out`
 for the output image path.
 
+## SSD visualisation CLI
+
+`scripts/visualize_ssd.py` offers a lightweight way to render the spatial
+structure diagrams (SSDs) produced by the circuit analyser. The helper is
+particularly convenient when exploring the benchmark generators because it can
+instantiate any registered circuit family and immediately draw the associated
+dependency graph.
+
+The script depends on the optional `networkx` and `matplotlib` packages. Install
+them alongside the core requirements to enable plotting:
+
+```bash
+pip install networkx matplotlib
+```
+
+Inspect the available circuit families and their canonical names:
+
+```bash
+python scripts/visualize_ssd.py --list
+```
+
+Once you have a target, generate it (optionally passing builder arguments) and
+either show the plot interactively or export it to disk:
+
+```bash
+# Render a stitched hybrid circuit and pop up the plot window
+python scripts/visualize_ssd.py hybrid_stitched --param n=16 --param block_size=4
+
+# Save the SSD of a disjoint circuit without opening a window
+python scripts/visualize_ssd.py disjoint_blocks --param n=24 --param blocks=3 \
+    --param prep=ghz --save disjoint_ssd.png --no-show
+```
+
+Each `--param` flag accepts `key=value` pairs that are forwarded verbatim to the
+underlying `benchmarks.build` helper. String literals can be given with or
+without quotes, while more complex types (lists, tuples, numbers) are parsed via
+`ast.literal_eval`.
+
 ## Calibration and playground scripts
 
 `scripts/` bundles calibration and exploratory tooling:
