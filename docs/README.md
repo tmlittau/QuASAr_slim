@@ -245,6 +245,9 @@ without quotes, while more complex types (lists, tuples, numbers) are parsed via
   saving thresholds to JSON for later benchmarking.
 - `playground_speedup_depth.py` — plot SV/Hybrid speedup versus total depth for
   a grid of qubit counts and cutoff fractions.
+- `playground_disjoint_speedup.py` — explore statevector vs per-block cost
+  speedups for the disjoint prep+tail circuits, sweeping block counts and
+  per-block tail depths.
 - `bench_from_thresholds.py` — consume a thresholds JSON (emitted by the cutoff
   playground) and automatically run QuASAr + baselines at the selected points,
   writing stacked bar plots to the output directory.
