@@ -95,6 +95,19 @@ def _summarize_blocks(qc, blocks: Sequence[Tuple[int, ...]]) -> List[BlockSummar
     return summaries
 
 
+def _parallel_cost(costs: Sequence[float], workers: int) -> float:
+    if workers <= 0:
+        raise ValueError("workers must be positive")
+    if not costs:
+        return 0.0
+    workers = min(workers, len(costs))
+    loads = [0.0 for _ in range(workers)]
+    for cost in sorted(costs, reverse=True):
+        index = min(range(workers), key=loads.__getitem__)
+        loads[index] += cost
+    return max(loads)
+
+
 def analyze_case(
     *,
     n: int,
@@ -107,6 +120,8 @@ def analyze_case(
     bandwidth: int,
     est: CostEstimator,
     seed: int | None,
+    include_conversion: bool,
+    workers: int,
 ) -> Dict[str, Any]:
     if n <= 0:
         raise ValueError("n must be positive")
@@ -135,10 +150,13 @@ def analyze_case(
     sv_cost = est.sv_cost(n, total_one, total_two)
 
     block_cost = 0.0
+    block_parallel_inputs: List[float] = []
     block_details: List[Dict[str, Any]] = []
     for summary in summaries:
         block_sv = est.sv_cost(summary.size, summary.oneq_ops, summary.twoq_ops)
         block_cost += block_sv
+        conv_cost = est.conversion_cost(summary.size) if include_conversion else 0.0
+        block_parallel_inputs.append(block_sv + conv_cost)
         block_details.append(
             {
                 "index": summary.index,
@@ -146,11 +164,18 @@ def analyze_case(
                 "oneq_ops": summary.oneq_ops,
                 "twoq_ops": summary.twoq_ops,
                 "sv_cost": block_sv,
+                "conversion_cost": conv_cost,
             }
         )
 
+    parallel_cost = _parallel_cost(block_parallel_inputs, workers)
+    sequential_cost = sum(block_parallel_inputs)
+
+    baseline_cost = min(sv_cost, sequential_cost)
+
     norm = float(1 << n)
-    speedup = (sv_cost / block_cost) if block_cost > 0 else math.inf
+    speedup_vs_sv = (sv_cost / parallel_cost) if parallel_cost > 0 else math.inf
+    speedup_vs_best = (baseline_cost / parallel_cost) if parallel_cost > 0 else math.inf
 
     return {
         "num_qubits": n,
@@ -162,7 +187,11 @@ def analyze_case(
         "sv_total_norm": sv_cost / norm,
         "block_total": block_cost,
         "block_total_norm": block_cost / norm,
-        "speedup_vs_sv": speedup,
+        "sequential_cost": sequential_cost,
+        "parallel_cost": parallel_cost,
+        "baseline_cost": baseline_cost,
+        "speedup_vs_sv": speedup_vs_sv,
+        "speedup_vs_baseline": speedup_vs_best,
         "blocks": block_details,
     }
 
@@ -188,8 +217,8 @@ def _format_block_sizes(block_sizes: Iterable[int]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
-            "Disjoint circuit playground: sweep block counts and tail depths to estimate "
-            "statevector vs per-block simulation costs."
+            "Disjoint circuit playground: sweep block counts and tail depths to compare "
+            "QuASAr's parallel disjoint execution against the best available whole-circuit baseline."
         )
     )
     ap.add_argument("--n", type=int, nargs="+", default=[32, 48, 64], help="Numbers of qubits to analyze")
@@ -217,6 +246,17 @@ def main() -> None:
     ap.add_argument("--twoq-factor", type=float, default=4.0, help="Statevector two-qubit gate factor")
     ap.add_argument("--target-speedup", type=float, default=1.0, help="Reference speedup line (SV_cost / per-block cost)")
     ap.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers available for disjoint block execution",
+    )
+    ap.add_argument(
+        "--include-conversion",
+        action="store_true",
+        help="Include amplitude conversion costs for per-block execution estimates",
+    )
+    ap.add_argument(
         "--seed",
         type=int,
         default=7,
@@ -237,7 +277,7 @@ def main() -> None:
     records: List[Dict[str, Any]] = []
     per_n_results: Dict[int, Dict[int, List[Tuple[int, Dict[str, Any]]]]] = {}
 
-    print("n, blocks, tail_depth, block_sizes, speedup, sv_total_norm, block_total_norm")
+    print("n, blocks, tail_depth, block_sizes, speedup_best, speedup_sv, baseline_norm, parallel_norm")
     for n in sorted(set(args.n)):
         per_tail: Dict[int, List[Tuple[int, Dict[str, Any]]]] = {}
         for tail_depth in sorted(set(args.tail_depths)):
@@ -256,13 +296,16 @@ def main() -> None:
                     bandwidth=args.bandwidth,
                     est=est,
                     seed=seed,
+                    include_conversion=args.include_conversion,
+                    workers=max(1, int(args.parallel_workers)),
                 )
                 series.append((blocks, res))
                 records.append(res)
                 print(
                     f"{n},{blocks},{tail_depth},"
                     f"{_format_block_sizes(res['block_sizes'])},"
-                    f"{res['speedup_vs_sv']:.3f},{res['sv_total_norm']:.1f},{res['block_total_norm']:.1f}"
+                    f"{res['speedup_vs_baseline']:.3f},{res['speedup_vs_sv']:.3f}"
+                    f",{res['baseline_cost'] / (1 << n):.1f},{res['parallel_cost'] / (1 << n):.1f}"
                 )
             if series:
                 per_tail[tail_depth] = series
@@ -284,6 +327,8 @@ def main() -> None:
                     "conv_factor": args.conv_factor,
                     "twoq_factor": args.twoq_factor,
                     "target_speedup": args.target_speedup,
+                    "parallel_workers": args.parallel_workers,
+                    "include_conversion": bool(args.include_conversion),
                     "seed": seed,
                 },
             },
@@ -305,11 +350,11 @@ def main() -> None:
     for ax, (n, per_tail) in zip(axes.flat, sorted(per_n_results.items())):
         for tail_depth, series in sorted(per_tail.items()):
             blocks_sorted = [b for b, _ in series]
-            speeds = [res["speedup_vs_sv"] for _, res in series]
+            speeds = [res["speedup_vs_baseline"] for _, res in series]
             ax.plot(blocks_sorted, speeds, marker="o", linewidth=2, label=f"tail={tail_depth}")
         ax.set_title(f"n={n}")
         ax.set_xlabel("Number of blocks")
-        ax.set_ylabel("Speedup (SV_cost / per-block cost)")
+        ax.set_ylabel("Speedup (best baseline / QuASAr parallel)")
         ax.grid(True, alpha=0.3)
         ax.axhline(args.target_speedup, linestyle="--", linewidth=1, color="black")
         ax.legend()
@@ -321,7 +366,8 @@ def main() -> None:
 
     fig.suptitle(
         "Disjoint circuit speedups\n"
-        f"conv={args.conv_factor}, twoq={args.twoq_factor}, prep={args.block_prep}, tail={args.tail_kind}"
+        f"conv={args.conv_factor}, twoq={args.twoq_factor}, prep={args.block_prep}, tail={args.tail_kind}, "
+        f"workers={args.parallel_workers}, conv_cost={'on' if args.include_conversion else 'off'}"
     )
     fig.tight_layout(rect=[0, 0.03, 1, 0.95])
 
