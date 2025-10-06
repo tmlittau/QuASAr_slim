@@ -89,6 +89,20 @@ python scripts/make_figures_and_tables.py hybrid \
     --out plots/hybrid_stacked.png
 ```
 
+When you only need a quick sanity check, shrink the sweep so it finishes in a
+couple of minutes on a laptop. Dropping the conversion factor to `2000` keeps
+the planner from over-estimating costs on small hosts (it will be less
+accurate, but still surfaces regressions quickly):
+
+```bash
+python scripts/make_figures_and_tables.py hybrid \
+    --n 12 16 \
+    --block-size 4 \
+    --max-ram-gb 32 \
+    --conv-factor 2000 \
+    --out plots/hybrid_sanity.png
+```
+
 Useful flags:
 
 - `--results-dir` to reuse an existing suite output directory (defaults to
@@ -116,6 +130,25 @@ python scripts/make_figures_and_tables.py disjoint \
     --sparsity 0.05 \
     --bandwidth 2 \
     --out plots/disjoint_runtime.png
+```
+
+To iterate faster on workstation-constrained hardware, narrow the sweep while
+retaining the mixed-tail structure. Again we lower the conversion factor to
+`2000` so that planning stays responsive even on smaller machines:
+
+```bash
+python scripts/make_figures_and_tables.py disjoint \
+    --n 16 \
+    --blocks 2 \
+    --prep mixed \
+    --tail-kind mixed \
+    --tail-depth 10 \
+    --angle-scale 0.1 \
+    --sparsity 0.05 \
+    --bandwidth 2 \
+    --max-ram-gb 32 \
+    --conv-factor 2000 \
+    --out plots/disjoint_sanity.png
 ```
 
 Key options:
