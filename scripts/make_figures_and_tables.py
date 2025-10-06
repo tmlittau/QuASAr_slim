@@ -199,6 +199,7 @@ def _serialise_params(params: Dict[str, Any]) -> str:
 
 def cmd_hybrid(args: argparse.Namespace) -> None:
     from plots.bar_hybrid import make_plot as make_hybrid_bars
+    from plots.plan_breakdown import make_plot as make_plan_breakdown
 
     suite_dir = Path(args.results_dir or "suite_hybrid").resolve()
     out_path = Path(args.out).resolve()
@@ -227,8 +228,33 @@ def cmd_hybrid(args: argparse.Namespace) -> None:
     if args.dry_run:
         return
 
-    print(f"[make_figures] Building hybrid bar chart -> {out_path}")
-    make_hybrid_bars(str(suite_dir), out=str(out_path), title=args.title)
+    mode = args.plot_mode or "plan"
+
+    if mode == "plan" and args.plot_mode is None and not args.case_kind:
+        # When multiple parameter combinations are present we will still only
+        # emit a single plan breakdown. Surface the choice so users know how to
+        # pick a different case.
+        suite_cases = sorted(Path(suite_dir).glob("*.json"))
+        interesting_cases = [p for p in suite_cases if p.name != "index.json"]
+        if len(interesting_cases) > 1:
+            print(
+                "[make_figures] Multiple hybrid cases detected; defaulting to the"
+                " first entry. Use --case-kind/--case-index to target a specific"
+                " circuit."
+            )
+
+    if mode == "plan":
+        print(f"[make_figures] Building hybrid plan breakdown -> {out_path}")
+        make_plan_breakdown(
+            str(suite_dir),
+            out=str(out_path),
+            title=args.title,
+            case_kind=args.case_kind,
+            case_index=args.case_index,
+        )
+    else:
+        print(f"[make_figures] Building hybrid bar chart -> {out_path}")
+        make_hybrid_bars(str(suite_dir), out=str(out_path), title=args.title)
 
 
 def cmd_disjoint(args: argparse.Namespace) -> None:
@@ -418,13 +444,36 @@ def build_parser() -> argparse.ArgumentParser:
     hybrid = subparsers.add_parser(
         "hybrid",
         parents=[parent],
-        help="Run the hybrid suite and create the stacked bar chart",
+        help="Run the hybrid suite and create the hybrid plan breakdown chart",
     )
     hybrid.add_argument("--n", type=int, nargs="+", default=[64, 96], help="Number of qubits to sweep")
     hybrid.add_argument("--block-size", type=int, nargs="+", default=[8], help="Hybrid block sizes")
     hybrid.add_argument("--non-disjoint-qubits", type=int, default=None, help="Limit non-disjoint qubits when planning")
     hybrid.add_argument("--out", type=str, required=True, help="Path to the output bar chart file")
     hybrid.add_argument("--title", type=str, default=None, help="Optional figure title override")
+    hybrid.add_argument(
+        "--plot-mode",
+        type=str,
+        choices=["suite", "plan"],
+        default=None,
+        help=(
+            "Choose between the suite-level stacked bars or the single-case plan"
+            " breakdown. The plan breakdown is now the default for consistency"
+            " with the paper figures."
+        ),
+    )
+    hybrid.add_argument(
+        "--case-kind",
+        type=str,
+        default=None,
+        help="When plotting a plan breakdown, focus on the specified case kind",
+    )
+    hybrid.add_argument(
+        "--case-index",
+        type=int,
+        default=0,
+        help="Fallback index used to pick a case when no kind filter is provided",
+    )
     hybrid.set_defaults(func=cmd_hybrid)
 
     # Disjoint ---------------------------------------------------------------
