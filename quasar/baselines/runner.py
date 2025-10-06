@@ -2,6 +2,9 @@
 from __future__ import annotations
 import logging
 import signal
+import multiprocessing
+import queue
+import traceback
 from contextlib import contextmanager
 from time import perf_counter
 from typing import Any, Dict, List, Literal, Optional
@@ -48,6 +51,90 @@ def _estimate_sv(circuit, *, ampops_per_sec: float | None = None) -> Dict[str, A
         est["time_est_sec"] = amp_ops / float(ampops_per_sec)
     return est
 
+def _dd_worker(circuit, result_queue):  # pragma: no cover - executed in a subprocess
+    try:
+        backend = DecisionDiagramBackend()
+        out = backend.run(circuit)
+        if out is None:
+            payload = {
+                "status": "ok",
+                "ok": False,
+                "statevector_len": None,
+                "error": "DD failed (backend returned None)",
+            }
+        else:
+            try:
+                state_len = len(out)  # type: ignore[arg-type]
+            except Exception:
+                state_len = None
+            payload = {
+                "status": "ok",
+                "ok": True,
+                "statevector_len": state_len,
+                "error": None,
+            }
+        result_queue.put(payload)
+    except TimeoutError as exc:
+        result_queue.put({"status": "timeout", "message": str(exc)})
+    except Exception as exc:  # pragma: no cover - defensive
+        result_queue.put(
+            {
+                "status": "exception",
+                "exc_type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+        )
+
+
+def _dd_subprocess_run(circuit, timeout_s: float | None):
+    try:
+        ctx = multiprocessing.get_context("fork")
+    except ValueError:  # pragma: no cover - fallback when fork unavailable
+        ctx = multiprocessing.get_context("spawn")
+
+    result_queue: multiprocessing.Queue = ctx.Queue()
+    proc = ctx.Process(target=_dd_worker, args=(circuit, result_queue))
+    proc.daemon = True
+    proc.start()
+
+    payload = None
+    interrupted = False
+    try:
+        if timeout_s is not None and timeout_s > 0:
+            try:
+                payload = result_queue.get(timeout=timeout_s)
+            except queue.Empty:
+                payload = {"status": "timeout", "message": f"operation exceeded {timeout_s} seconds"}
+        else:
+            payload = result_queue.get()
+    except EOFError:  # pragma: no cover - queue closed unexpectedly
+        payload = {"status": "exception", "message": "DD subprocess ended without producing a result"}
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        if proc.is_alive() and (interrupted or payload is None or payload.get("status") == "timeout"):
+            proc.terminate()
+        proc.join()
+        result_queue.close()
+        result_queue.cancel_join_thread()
+
+    if payload is None:
+        if proc.exitcode not in (0, None):
+            return {
+                "status": "exception",
+                "message": f"DD subprocess exited with code {proc.exitcode}",
+            }
+        return {"status": "exception", "message": "DD subprocess returned no result"}
+
+    if payload.get("status") == "timeout" and proc.exitcode not in (0, None) and proc.exitcode != -15:
+        payload = dict(payload)
+        payload.setdefault("message", f"operation exceeded {timeout_s} seconds")
+
+    return payload
+
+
 def _run_backend(
     which: Which,
     circuit,
@@ -58,6 +145,40 @@ def _run_backend(
 ) -> Dict[str, Any]:
     t0 = perf_counter()
     try:
+        if which == "dd":
+            if not ddsim_available():
+                est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
+                est["note"] = "DD unavailable; worst-case SV bound"
+                return {
+                    "ok": False,
+                    "backend": "dd",
+                    "error": "mqt.ddsim not available",
+                    "elapsed_s": 0.0,
+                    "wall_s_measured": 0.0,
+                    "estimate": est,
+                }
+
+            payload = _dd_subprocess_run(circuit, timeout_s)
+            status = payload.get("status")
+            if status == "timeout":
+                raise TimeoutError(payload.get("message", "DD baseline exceeded timeout"))
+            if status == "exception":
+                message = payload.get("message", "DD subprocess raised an exception")
+                exc_type = payload.get("exc_type")
+                if exc_type:
+                    message = f"{exc_type}: {message}"
+                raise RuntimeError(message)
+
+            t1 = perf_counter()
+            return {
+                "ok": bool(payload.get("ok")),
+                "backend": "dd",
+                "statevector_len": payload.get("statevector_len"),
+                "elapsed_s": t1 - t0,
+                "wall_s_measured": t1 - t0,
+                "error": payload.get("error"),
+            }
+
         with _deadline(timeout_s):
             if which == "sv":
                 if max_ram_gb is not None:
@@ -82,29 +203,6 @@ def _run_backend(
                     "elapsed_s": t1 - t0,
                     "wall_s_measured": t1 - t0,
                     "error": None if out is not None else "SV failed (backend returned None)",
-                }
-            elif which == "dd":
-                if not ddsim_available():
-                    # Worst-case bound falls back to SV estimates
-                    est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
-                    est["note"] = "DD unavailable; worst-case SV bound"
-                    return {
-                        "ok": False,
-                        "backend": "dd",
-                        "error": "mqt.ddsim not available",
-                        "elapsed_s": 0.0,
-                        "wall_s_measured": 0.0,
-                        "estimate": est,
-                    }
-                out = DecisionDiagramBackend().run(circuit)
-                t1 = perf_counter()
-                return {
-                    "ok": out is not None,
-                    "backend": "dd",
-                    "statevector_len": None if out is None else len(out),
-                    "elapsed_s": t1 - t0,
-                    "wall_s_measured": t1 - t0,
-                    "error": None if out is not None else "DD failed (backend returned None)",
                 }
             else:  # tableau
                 out = TableauBackend().run(circuit)

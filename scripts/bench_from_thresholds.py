@@ -121,16 +121,36 @@ def run_from_thresholds(
         exec_elapsed = perf_counter() - exec_start
         log.info("Execution completed in %.2fs", exec_elapsed)
 
+        if ssd.partitions:
+            tail_backend = ssd.partitions[-1].backend or "unassigned"
+            log.info("Selecting baseline backend to match tail partition: %s", tail_backend)
+        else:
+            tail_backend = None
+
+        baseline_backends: List[str]
+        if tail_backend in {"sv", "statevector"}:
+            baseline_backends = ["sv"]
+        elif tail_backend in {"dd", "decision_diagram"}:
+            baseline_backends = ["dd"]
+        elif tail_backend in {"tableau"}:
+            baseline_backends = ["tableau"]
+        else:
+            baseline_backends = ["tableau", "sv", "dd"]
+
         timeout_desc = (
             f"{baseline_timeout_s:.1f}s"
             if baseline_timeout_s is not None and baseline_timeout_s > 0
             else "disabled"
         )
-        log.info("Running baselines with timeout %s", timeout_desc)
+        log.info(
+            "Running baselines with timeout %s (selected: %s)",
+            timeout_desc,
+            ", ".join(baseline_backends),
+        )
         baseline_start = perf_counter()
         bl = run_baselines(
             circ,
-            which=["tableau", "sv", "dd"],
+            which=baseline_backends,
             per_partition=False,
             max_ram_gb=max_ram_gb,
             sv_ampops_per_sec=sv_ampops_per_sec,
