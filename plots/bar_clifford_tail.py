@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 COLORS = {
-    "tableau": "#4CAF50",
-    "sv": "#1E88E5",
-    "dd": "#F4511E",
-    "conversion": "#9E9E9E"
+    "tableau": "#A5D6A7",  # pastel green
+    "sv": "#90CAF9",       # pastel blue
+    "dd": "#FFCCBC",       # pastel orange
+    "conversion": "#CFD8DC"  # pastel grey
 }
 
 KINDS = {"clifford_plus_rot", "clifford_prefix_rot_tail"}
@@ -239,37 +239,98 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
             base_methods.append(best[0]); base_times.append(best[1])
 
     N = len(labels)
-    x = np.arange(N)
-    width = 0.42
+    if N == 0:
+        raise SystemExit("No cases available for plotting")
 
-    plt.figure(figsize=(max(8, N*1.3), 5))
+    width = 0.6
 
-    # QuASAr stacked bar
-    plt.bar(x - width/2, t_tab, width, label="QuASAr: tableau", color=COLORS["tableau"])
-    plt.bar(x - width/2, t_conv, width, bottom=t_tab, label="QuASAr: conversion", color=COLORS["conversion"], hatch='//', edgecolor='black')
-    bottoms = np.array(t_tab) + np.array(t_conv)
-    tail_colors = [COLORS.get(m, COLORS["sv"]) for m in tail_methods]
-    plt.bar(x - width/2, t_tail, width, bottom=bottoms, label="QuASAr: tail", color=tail_colors)
+    fig, axes = plt.subplots(1, N, figsize=(max(6, N * 4.2), 5), sharey=True)
+    if N == 1:
+        axes = [axes]
 
-    # Baseline (whole-circuit) bar next to it
-    base_colors = [COLORS.get(m, COLORS["sv"]) for m in base_methods]
-    plt.bar(x + width/2, base_times, width, label="Baseline (whole circuit)", color=base_colors, alpha=0.9)
+    tableau_used = any(t > 0 for t in t_tab)
+    conversion_used = any(t > 0 for t in t_conv)
+    tail_methods_used = {m for m, t in zip(tail_methods, t_tail) if t > 0}
+    base_methods_used = {m for m, t in zip(base_methods, base_times) if np.isfinite(t) and t > 0}
 
-    plt.xticks(x, labels, rotation=25, ha='right')
-    plt.ylabel("Time (s)")
-    plt.title(title or "QuASAr (stacked) vs whole-circuit baseline")
+    for idx, ax in enumerate(axes):
+        tab = t_tab[idx]
+        conv = t_conv[idx]
+        tail = t_tail[idx]
+        base_time = base_times[idx]
+        tail_method = tail_methods[idx]
+        base_method = base_methods[idx]
+
+        bottom = 0.0
+        if tab > 0:
+            ax.bar(0, tab, width, color=COLORS["tableau"], edgecolor="black")
+            bottom += tab
+        if conv > 0:
+            ax.bar(0, conv, width, bottom=bottom, color=COLORS["conversion"], edgecolor="black", hatch="//")
+            bottom += conv
+        if tail > 0:
+            ax.bar(0, tail, width, bottom=bottom, color=COLORS.get(tail_method, COLORS["sv"]), edgecolor="black")
+
+        total_quasar = tab + conv + tail
+        if total_quasar > 0 and np.isfinite(base_time) and base_time > 0:
+            speedup = base_time / total_quasar
+            y_offset = 0.05 * max(total_quasar, base_time)
+            ax.text(
+                0,
+                total_quasar + y_offset,
+                f"{speedup:.1f}×",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+
+        if np.isfinite(base_time) and base_time > 0:
+            ax.bar(1, base_time, width, color=COLORS.get(base_method, COLORS["sv"]), edgecolor="black", alpha=0.9)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["QuASAr", "Baseline"])
+        ax.set_xlim(-0.75, 1.75)
+        ax.set_title(labels[idx])
+        if idx == 0:
+            ax.set_ylabel("Time (s)")
+
+    case_info = cases[0].get("case", {}) if cases else {}
+    params = case_info.get("params", {}) if isinstance(case_info, dict) else {}
+    kind = case_info.get("kind") if isinstance(case_info, dict) else None
+    default_title = None
+    if kind:
+        try:
+            n0 = int(params.get("num_qubits", labels[0]))
+            d0 = int(params.get("depth", labels[0]))
+            default_title = f"{kind} (n={n0}, d={d0})"
+        except Exception:
+            default_title = kind
+    fig.suptitle(title or default_title or "QuASAr vs baseline")
+
     import matplotlib.patches as mpatches
-    legend_handles = [
-        mpatches.Patch(color=COLORS["tableau"], label="QuASAr: tableau"),
-        mpatches.Patch(color=COLORS["conversion"], label="QuASAr: conversion", hatch='//', edgecolor='black'),
-        mpatches.Patch(color=COLORS["sv"], label="Tail/Baseline: SV"),
-        mpatches.Patch(color=COLORS["dd"], label="Tail/Baseline: DD"),
-    ]
-    plt.legend(handles=legend_handles, loc="best")
-    plt.tight_layout()
+
+    legend_handles = []
+    if tableau_used:
+        legend_handles.append(mpatches.Patch(color=COLORS["tableau"], edgecolor="black", label="QuASAr: tableau"))
+    if conversion_used:
+        legend_handles.append(mpatches.Patch(color=COLORS["conversion"], edgecolor="black", hatch="//", label="QuASAr: conversion"))
+    for method in sorted(tail_methods_used):
+        method_label = str(method).upper()
+        label = f"QuASAr tail: {method_label}"
+        legend_handles.append(mpatches.Patch(color=COLORS.get(method, COLORS["sv"]), edgecolor="black", label=label))
+    for method in sorted(base_methods_used):
+        method_label = str(method).upper()
+        label = f"Baseline: {method_label}"
+        legend_handles.append(mpatches.Patch(color=COLORS.get(method, COLORS["sv"]), edgecolor="black", alpha=0.9, label=label))
+
+    if legend_handles:
+        fig.legend(handles=legend_handles, loc="upper right")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     if out:
-        plt.savefig(out, dpi=200)
+        fig.savefig(out, dpi=200)
         print(f"Wrote {out}")
     else:
         plt.show()
