@@ -144,62 +144,96 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
             baseline_methods.append(best[0])
             baseline_times.append(best[1])
 
-    x = np.arange(len(labels))
-    width = 0.38
+    count = len(labels)
+    if count == 0:
+        raise SystemExit("No cases available for plotting")
 
-    plt.figure(figsize=(max(8, len(labels) * 1.4), 5.5))
-    plt.bar(
-        x - width / 2,
-        quasar_times,
-        width,
-        label="QuASAr (parallel disjoint)",
-        color=QUASAR_COLOR,
-        edgecolor=EDGE_COLOR,
-    )
+    width = 0.6
+    fig, axes = plt.subplots(1, count, figsize=(max(6, count * 3.6), 5.5), sharey=True)
+    if count == 1:
+        axes = [axes]
 
-    baseline_colors = [BASELINE_COLORS.get(m, FALLBACK_COLOR) for m in baseline_methods]
-    plt.bar(
-        x + width / 2,
-        baseline_times,
-        width,
-        color=baseline_colors,
-        edgecolor=EDGE_COLOR,
-        alpha=0.9,
-    )
+    for idx, ax in enumerate(axes):
+        quasar_time = quasar_times[idx]
+        baseline_time = baseline_times[idx]
+        baseline_method = baseline_methods[idx]
 
-    plt.xticks(x, labels, rotation=25, ha="right")
-    plt.ylabel("Time (s)")
-    plt.title(title or "QuASAr (parallel disjoint) vs baseline")
+        if np.isfinite(quasar_time) and quasar_time > 0:
+            ax.bar(
+                0,
+                quasar_time,
+                width,
+                color=QUASAR_COLOR,
+                edgecolor=EDGE_COLOR,
+            )
+
+        if np.isfinite(baseline_time) and baseline_time > 0:
+            ax.bar(
+                1,
+                baseline_time,
+                width,
+                color=BASELINE_COLORS.get(baseline_method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+                alpha=0.9,
+            )
+
+            if np.isfinite(quasar_time) and quasar_time > 0:
+                speedup = baseline_time / quasar_time
+                y_offset = 0.05 * max(quasar_time, baseline_time)
+                ax.text(
+                    0,
+                    quasar_time + y_offset,
+                    f"{speedup:.1f}×",
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                    fontweight="bold",
+                )
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["QuASAr", "Baseline"])
+        ax.set_xlim(-0.75, 1.75)
+        ax.set_title(labels[idx])
+        ax.grid(axis="y", alpha=0.3)
+        if idx == 0:
+            ax.set_ylabel("Time (s)")
+
+    fig.suptitle(title or "QuASAr (parallel disjoint) vs baseline")
 
     import matplotlib.patches as mpatches
+
+    baseline_used = {
+        method
+        for method, t in zip(baseline_methods, baseline_times)
+        if np.isfinite(t) and t > 0
+    }
 
     legend_handles = [
         mpatches.Patch(
             color=QUASAR_COLOR,
             edgecolor=EDGE_COLOR,
             label="QuASAr (parallel disjoint)",
-        ),
-        mpatches.Patch(
-            color=BASELINE_COLORS["sv"],
-            edgecolor=EDGE_COLOR,
-            label="Baseline: SV",
-        ),
-        mpatches.Patch(
-            color=BASELINE_COLORS["dd"],
-            edgecolor=EDGE_COLOR,
-            label="Baseline: DD",
-        ),
-        mpatches.Patch(
-            color=BASELINE_COLORS["tableau"],
-            edgecolor=EDGE_COLOR,
-            label="Baseline: Tableau",
-        ),
+        )
     ]
-    plt.legend(handles=legend_handles, loc="best")
-    plt.tight_layout()
+
+    for method in sorted(baseline_used):
+        label_method = method.replace("_", " ").upper()
+        legend_handles.append(
+            mpatches.Patch(
+                color=BASELINE_COLORS.get(method, FALLBACK_COLOR),
+                edgecolor=EDGE_COLOR,
+                alpha=0.9,
+                label=f"Baseline: {label_method}",
+            )
+        )
+
+    if legend_handles:
+        fig.legend(handles=legend_handles, loc="upper right")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
 
     if out:
-        plt.savefig(out, dpi=200)
+        fig.savefig(out, dpi=200)
         print(f"Wrote {out}")
     else:
         plt.show()

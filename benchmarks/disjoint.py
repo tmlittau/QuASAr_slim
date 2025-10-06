@@ -75,8 +75,11 @@ def _diag_tail_layer(
     size = len(block)
     if size == 0:
         return
-    num_rz = int(round(sparsity * size))
-    num_rz = max(0, min(size, num_rz))
+    if sparsity <= 0:
+        num_rz = 0
+    else:
+        num_rz = math.ceil(sparsity * size)
+        num_rz = max(1, min(size, num_rz))
     if num_rz > 0:
         targets = list(rng.choice(block, size=num_rz, replace=False))
         for qubit in targets:
