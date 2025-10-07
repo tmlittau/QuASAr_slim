@@ -20,6 +20,7 @@ from plots.palette import apply_paper_style
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES_DIR = ROOT / "suites"
+SUITE_CONFIG_NAME = "suite_config.json"
 
 
 apply_paper_style()
@@ -51,6 +52,36 @@ def _has_suite_results(suite_dir: Path) -> bool:
     return False
 
 
+def _suite_config_path(suite_dir: Path) -> Path:
+    return suite_dir / SUITE_CONFIG_NAME
+
+
+def _load_suite_config(suite_dir: Path) -> Optional[Dict[str, Any]]:
+    path = _suite_config_path(suite_dir)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def _write_suite_config(suite_dir: Path, config: Dict[str, Any]) -> None:
+    path = _suite_config_path(suite_dir)
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=2, sort_keys=True)
+    except Exception:
+        print(
+            f"[make_figures] Warning: failed to write suite config to {path}",
+            file=sys.stderr,
+        )
+
+
 def _ensure_suite(
     script_name: str,
     *,
@@ -62,12 +93,31 @@ def _ensure_suite(
 ) -> None:
     """Run the suite if results are missing or ``force`` is True."""
 
-    if force or not _has_suite_results(suite_dir):
+    stamp = {
+        "script": script_name,
+        "runner_args": list(runner_args),
+    }
+
+    have_results = _has_suite_results(suite_dir)
+    current_config = _load_suite_config(suite_dir) if have_results else None
+    config_matches = current_config == stamp
+
+    if not force and have_results and config_matches:
+        print(f"[make_figures] Reusing existing results in {suite_dir}")
+        return
+
+    if have_results and not config_matches:
+        print(
+            f"[make_figures] Existing results in {suite_dir} do not match the "
+            "requested parameters; rebuilding suite",
+        )
+
+    if force or not have_results or not config_matches:
         suite_dir.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, str(SUITES_DIR / script_name), *runner_args]
         _run_command(cmd, dry_run=dry_run, timeout=timeout)
-    else:
-        print(f"[make_figures] Reusing existing results in {suite_dir}")
+        if not dry_run:
+            _write_suite_config(suite_dir, stamp)
 
 
 def _safe_float(value: Any) -> Optional[float]:
