@@ -1,16 +1,18 @@
 
 from __future__ import annotations
+
 import logging
-import signal
 import multiprocessing
 import queue
+import signal
 import traceback
 from contextlib import contextmanager
 from time import perf_counter
 from typing import Any, Dict, List, Literal, Optional
+
 from ..analyzer import analyze
-from ..backends.sv import StatevectorBackend, estimate_sv_bytes
 from ..backends.dd import DecisionDiagramBackend, ddsim_available
+from ..backends.sv import StatevectorBackend, estimate_sv_bytes
 from ..backends.tableau import TableauBackend, stim_available
 
 Which = Literal["tableau","sv","dd"]
@@ -51,91 +53,7 @@ def _estimate_sv(circuit, *, ampops_per_sec: float | None = None) -> Dict[str, A
         est["time_est_sec"] = amp_ops / float(ampops_per_sec)
     return est
 
-def _dd_worker(circuit, result_queue):  # pragma: no cover - executed in a subprocess
-    try:
-        backend = DecisionDiagramBackend()
-        out = backend.run(circuit)
-        if out is None:
-            payload = {
-                "status": "ok",
-                "ok": False,
-                "statevector_len": None,
-                "error": "DD failed (backend returned None)",
-            }
-        else:
-            try:
-                state_len = len(out)  # type: ignore[arg-type]
-            except Exception:
-                state_len = None
-            payload = {
-                "status": "ok",
-                "ok": True,
-                "statevector_len": state_len,
-                "error": None,
-            }
-        result_queue.put(payload)
-    except TimeoutError as exc:
-        result_queue.put({"status": "timeout", "message": str(exc)})
-    except Exception as exc:  # pragma: no cover - defensive
-        result_queue.put(
-            {
-                "status": "exception",
-                "exc_type": type(exc).__name__,
-                "message": str(exc),
-                "traceback": traceback.format_exc(),
-            }
-        )
-
-
-def _dd_subprocess_run(circuit, timeout_s: float | None):
-    try:
-        ctx = multiprocessing.get_context("fork")
-    except ValueError:  # pragma: no cover - fallback when fork unavailable
-        ctx = multiprocessing.get_context("spawn")
-
-    result_queue: multiprocessing.Queue = ctx.Queue()
-    proc = ctx.Process(target=_dd_worker, args=(circuit, result_queue))
-    proc.daemon = True
-    proc.start()
-
-    payload = None
-    interrupted = False
-    try:
-        if timeout_s is not None and timeout_s > 0:
-            try:
-                payload = result_queue.get(timeout=timeout_s)
-            except queue.Empty:
-                payload = {"status": "timeout", "message": f"operation exceeded {timeout_s} seconds"}
-        else:
-            payload = result_queue.get()
-    except EOFError:  # pragma: no cover - queue closed unexpectedly
-        payload = {"status": "exception", "message": "DD subprocess ended without producing a result"}
-    except KeyboardInterrupt:
-        interrupted = True
-        raise
-    finally:
-        if proc.is_alive() and (interrupted or payload is None or payload.get("status") == "timeout"):
-            proc.terminate()
-        proc.join()
-        result_queue.close()
-        result_queue.cancel_join_thread()
-
-    if payload is None:
-        if proc.exitcode not in (0, None):
-            return {
-                "status": "exception",
-                "message": f"DD subprocess exited with code {proc.exitcode}",
-            }
-        return {"status": "exception", "message": "DD subprocess returned no result"}
-
-    if payload.get("status") == "timeout" and proc.exitcode not in (0, None) and proc.exitcode != -15:
-        payload = dict(payload)
-        payload.setdefault("message", f"operation exceeded {timeout_s} seconds")
-
-    return payload
-
-
-def _run_backend(
+def _run_backend_impl(
     which: Which,
     circuit,
     *,
@@ -144,7 +62,7 @@ def _run_backend(
     timeout_s: float | None = None,
 ) -> Dict[str, Any]:
     t0 = perf_counter()
-    try:
+    with _deadline(timeout_s):
         if which == "dd":
             if not ddsim_available():
                 est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
@@ -158,92 +76,247 @@ def _run_backend(
                     "estimate": est,
                 }
 
-            payload = _dd_subprocess_run(circuit, timeout_s)
-            status = payload.get("status")
-            if status == "timeout":
-                raise TimeoutError(payload.get("message", "DD baseline exceeded timeout"))
-            if status == "exception":
-                message = payload.get("message", "DD subprocess raised an exception")
-                exc_type = payload.get("exc_type")
-                if exc_type:
-                    message = f"{exc_type}: {message}"
-                raise RuntimeError(message)
-
+            backend = DecisionDiagramBackend()
+            out = backend.run(circuit)
             t1 = perf_counter()
+            if out is None:
+                return {
+                    "ok": False,
+                    "backend": "dd",
+                    "statevector_len": None,
+                    "elapsed_s": t1 - t0,
+                    "wall_s_measured": t1 - t0,
+                    "mem_bytes": 256 * 1024 * 1024,
+                    "error": "DD failed (backend returned None)",
+                }
+
+            try:
+                state_len = len(out)  # type: ignore[arg-type]
+            except Exception:
+                state_len = None
             return {
-                "ok": bool(payload.get("ok")),
+                "ok": True,
                 "backend": "dd",
-                "statevector_len": payload.get("statevector_len"),
+                "statevector_len": state_len,
                 "elapsed_s": t1 - t0,
                 "wall_s_measured": t1 - t0,
                 "mem_bytes": 256 * 1024 * 1024,
-                "error": payload.get("error"),
+                "error": None,
             }
 
-        with _deadline(timeout_s):
-            if which == "sv":
-                if max_ram_gb is not None:
-                    cap = int(max_ram_gb * (1024**3))
-                    need = estimate_sv_bytes(getattr(circuit, "num_qubits", 0))
-                    if need > cap:
-                        est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
-                        result = {
-                            "ok": False,
-                            "backend": "sv",
-                            "error": f"SV exceeds cap ({need} > {cap} bytes)",
-                            "elapsed_s": 0.0,
-                            "wall_s_measured": 0.0,
-                            "estimate": est,
-                        }
-                        time_est = est.get("time_est_sec")
-                        if time_est is not None:
-                            result["wall_s_estimated"] = float(time_est)
-                        mem_est = est.get("mem_bytes")
-                        if mem_est is not None:
-                            result["mem_bytes_estimated"] = int(mem_est)
-                        return result
-                out = StatevectorBackend().run(circuit)
-                t1 = perf_counter()
-                return {
-                    "ok": out is not None,
-                    "backend": "sv",
-                    "statevector_len": None if out is None else len(out),
-                    "elapsed_s": t1 - t0,
-                    "wall_s_measured": t1 - t0,
-                    "mem_bytes": estimate_sv_bytes(getattr(circuit, "num_qubits", 0)),
-                    "error": None if out is not None else "SV failed (backend returned None)",
-                }
-            else:  # tableau
-                out = TableauBackend().run(circuit)
-                t1 = perf_counter()
-                # If non-Clifford, provide no strict estimate; report metrics only
-                if out is None:
+        if which == "sv":
+            if max_ram_gb is not None:
+                cap = int(max_ram_gb * (1024**3))
+                need = estimate_sv_bytes(getattr(circuit, "num_qubits", 0))
+                if need > cap:
                     est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
-                    est["note"] = "Not Clifford; tableau inapplicable. SV worst-case bound provided."
                     result = {
                         "ok": False,
-                        "backend": "tableau",
+                        "backend": "sv",
+                        "error": f"SV exceeds cap ({need} > {cap} bytes)",
                         "elapsed_s": 0.0,
                         "wall_s_measured": 0.0,
-                        "error": "Tableau failed (non-Clifford)",
                         "estimate": est,
                     }
-                    mem_est = est.get("mem_bytes")
-                    if mem_est is not None:
-                        result["mem_bytes_estimated"] = int(mem_est)
                     time_est = est.get("time_est_sec")
                     if time_est is not None:
                         result["wall_s_estimated"] = float(time_est)
+                    mem_est = est.get("mem_bytes")
+                    if mem_est is not None:
+                        result["mem_bytes_estimated"] = int(mem_est)
                     return result
-                return {
-                    "ok": True,
-                    "backend": "tableau",
-                    "statevector_len": len(out),
-                    "elapsed_s": t1 - t0,
-                    "wall_s_measured": t1 - t0,
-                    "mem_bytes": 64 * 1024 * 1024,
-                    "error": None,
+            out = StatevectorBackend().run(circuit)
+            t1 = perf_counter()
+            return {
+                "ok": out is not None,
+                "backend": "sv",
+                "statevector_len": None if out is None else len(out),
+                "elapsed_s": t1 - t0,
+                "wall_s_measured": t1 - t0,
+                "mem_bytes": estimate_sv_bytes(getattr(circuit, "num_qubits", 0)),
+                "error": None if out is not None else "SV failed (backend returned None)",
+            }
+
+        out = TableauBackend().run(circuit)
+        t1 = perf_counter()
+        # If non-Clifford, provide no strict estimate; report metrics only
+        if out is None:
+            est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
+            est["note"] = "Not Clifford; tableau inapplicable. SV worst-case bound provided."
+            result = {
+                "ok": False,
+                "backend": "tableau",
+                "elapsed_s": 0.0,
+                "wall_s_measured": 0.0,
+                "error": "Tableau failed (non-Clifford)",
+                "estimate": est,
+            }
+            mem_est = est.get("mem_bytes")
+            if mem_est is not None:
+                result["mem_bytes_estimated"] = int(mem_est)
+            time_est = est.get("time_est_sec")
+            if time_est is not None:
+                result["wall_s_estimated"] = float(time_est)
+            return result
+        return {
+            "ok": True,
+            "backend": "tableau",
+            "statevector_len": len(out),
+            "elapsed_s": t1 - t0,
+            "wall_s_measured": t1 - t0,
+            "mem_bytes": 64 * 1024 * 1024,
+            "error": None,
+        }
+
+
+def _backend_worker(
+    which: Which,
+    circuit,
+    max_ram_gb: float | None,
+    sv_ampops_per_sec: float | None,
+    result_queue,
+):  # pragma: no cover - executed in a subprocess
+    try:
+        result = _run_backend_impl(
+            which,
+            circuit,
+            max_ram_gb=max_ram_gb,
+            sv_ampops_per_sec=sv_ampops_per_sec,
+            timeout_s=None,
+        )
+        result_queue.put({"status": "ok", "result": result})
+    except TimeoutError as exc:
+        result_queue.put({"status": "timeout", "message": str(exc)})
+    except MemoryError as exc:
+        result_queue.put({"status": "memory_error", "message": str(exc)})
+    except Exception as exc:  # pragma: no cover - defensive
+        result_queue.put(
+            {
+                "status": "exception",
+                "exc_type": type(exc).__name__,
+                "message": str(exc),
+                "traceback": traceback.format_exc(),
+            }
+        )
+
+
+def _run_backend_subprocess(
+    which: Which,
+    circuit,
+    *,
+    max_ram_gb: float | None,
+    sv_ampops_per_sec: float | None,
+    timeout_s: float,
+):
+    try:
+        ctx = multiprocessing.get_context("fork")
+    except ValueError:  # pragma: no cover - fallback when fork unavailable
+        ctx = multiprocessing.get_context("spawn")
+
+    result_queue: multiprocessing.Queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_backend_worker,
+        args=(which, circuit, max_ram_gb, sv_ampops_per_sec, result_queue),
+    )
+    proc.daemon = True
+    proc.start()
+
+    payload = None
+    interrupted = False
+    try:
+        if timeout_s > 0:
+            try:
+                payload = result_queue.get(timeout=timeout_s)
+            except queue.Empty:
+                payload = {
+                    "status": "timeout",
+                    "message": f"operation exceeded {timeout_s} seconds",
                 }
+        else:
+            payload = result_queue.get()
+    except EOFError:  # pragma: no cover - queue closed unexpectedly
+        payload = {
+            "status": "exception",
+            "message": "Baseline subprocess ended without producing a result",
+        }
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
+    finally:
+        if proc.is_alive() and (
+            interrupted
+            or payload is None
+            or payload.get("status") in {"timeout", "exception"}
+        ):
+            proc.terminate()
+        proc.join()
+        result_queue.close()
+        result_queue.cancel_join_thread()
+
+    if payload is None:
+        if proc.exitcode not in (0, None):
+            raise RuntimeError(
+                f"Backend subprocess exited with code {proc.exitcode}"
+            )
+        raise RuntimeError("Backend subprocess returned no result")
+
+    status = payload.get("status")
+    if status == "ok":
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Backend subprocess produced invalid result payload")
+        return result
+
+    if status == "timeout":
+        message = payload.get(
+            "message", f"Backend {which} exceeded timeout"
+        )
+        raise TimeoutError(message)
+
+    if status == "memory_error":
+        message = payload.get(
+            "message", "Baseline subprocess ran out of memory"
+        )
+        raise MemoryError(message)
+
+    if status == "exception":
+        message = payload.get(
+            "message", "Baseline subprocess raised an exception"
+        )
+        exc_type = payload.get("exc_type")
+        if exc_type:
+            message = f"{exc_type}: {message}"
+        raise RuntimeError(message)
+
+    raise RuntimeError(f"Unexpected backend subprocess status: {status}")
+
+
+def _run_backend(
+    which: Which,
+    circuit,
+    *,
+    max_ram_gb: float | None = None,
+    sv_ampops_per_sec: float | None = None,
+    timeout_s: float | None = None,
+):
+    t0 = perf_counter()
+    try:
+        if timeout_s is not None and timeout_s > 0:
+            return _run_backend_subprocess(
+                which,
+                circuit,
+                max_ram_gb=max_ram_gb,
+                sv_ampops_per_sec=sv_ampops_per_sec,
+                timeout_s=float(timeout_s),
+            )
+
+        return _run_backend_impl(
+            which,
+            circuit,
+            max_ram_gb=max_ram_gb,
+            sv_ampops_per_sec=sv_ampops_per_sec,
+            timeout_s=timeout_s,
+        )
     except TimeoutError:
         t1 = perf_counter()
         est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
