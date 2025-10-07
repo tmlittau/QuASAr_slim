@@ -166,6 +166,8 @@ Key options:
   than the configured limit.
 - As with the hybrid workflow, planner and baseline tuning flags are passed
   through to `suites/run_disjoint_suite.py`.
+- `--parallel-workers` controls how many worker processes QuASAr should use
+  when executing disjoint blocks in parallel (defaults to an automatic choice).
 
 #### Consolidated tables
 

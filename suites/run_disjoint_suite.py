@@ -110,7 +110,10 @@ def run_case(
 
     if planned_ssd is not None:
         try:
-            exec_cfg = ExecutionConfig(max_ram_gb=float(args.max_ram_gb))
+            exec_cfg = ExecutionConfig(
+                max_ram_gb=float(args.max_ram_gb),
+                max_workers=int(args.parallel_workers) if args.parallel_workers is not None else 0,
+            )
             t0 = time.time()
             exec_payload = execute_ssd(planned_ssd, exec_cfg)
             elapsed = time.time() - t0
@@ -160,6 +163,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--twoq-factor", type=float, default=4.0, help="Statevector two-qubit gate factor")
     parser.add_argument("--max-ram-gb", type=float, default=64.0, help="RAM budget for planning/execution")
     parser.add_argument("--sv-ampops-per-sec", type=float, default=None, help="Override SV amp-ops/sec baseline speed")
+    parser.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=0,
+        help="Number of parallel workers to use for executing disjoint blocks (0 = auto)",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for circuit construction")
     return parser.parse_args()
 
