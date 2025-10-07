@@ -304,6 +304,8 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         runner_args.extend(["--prep", args.prep])
     if args.sv_ampops_per_sec is not None:
         runner_args.extend(["--sv-ampops-per-sec", str(args.sv_ampops_per_sec)])
+    if args.parallel_workers is not None:
+        runner_args.extend(["--parallel-workers", str(args.parallel_workers)])
     if args.seed is not None:
         runner_args.extend(["--seed", str(args.seed)])
 
@@ -550,6 +552,12 @@ def build_parser() -> argparse.ArgumentParser:
     disjoint.add_argument("--seed", type=int, default=None, help="Random seed for circuit construction")
     disjoint.add_argument("--out", type=str, required=True, help="Path to the output bar chart file")
     disjoint.add_argument("--title", type=str, default=None, help="Optional figure title override")
+    disjoint.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=None,
+        help="Override the number of parallel workers when executing disjoint blocks",
+    )
     disjoint.set_defaults(func=cmd_disjoint)
 
     # Table ------------------------------------------------------------------
