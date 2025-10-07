@@ -37,8 +37,13 @@ from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
+from qiskit import QuantumCircuit
 
 from benchmarks.disjoint import disjoint_preps_plus_tails
+from benchmarks.hybrid import (
+    stitched_disjoint_diag_bandedqft_diag,
+    stitched_disjoint_rand_bandedqft_rand,
+)
 from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
 from quasar.SSD import SSD, PartitionNode
 from quasar.analyzer import analyze
@@ -245,6 +250,111 @@ def _estimate_amp_ops(ssd: SSD, cfg: PlannerConfig) -> float:
     return float(total)
 
 
+def _build_ablation_circuit(
+    *,
+    num_qubits: int,
+    num_blocks: int,
+    tail_depth: int,
+    angle_scale: float,
+    sparsity: float,
+    bandwidth: int,
+    seed: int,
+) -> QuantumCircuit:
+    """Create a deep hybrid/disjoint circuit for the ablation study."""
+
+    if num_qubits <= 0:
+        raise ValueError("num_qubits must be positive")
+    if num_blocks <= 0 or num_blocks > num_qubits:
+        raise ValueError("num_blocks must be between 1 and num_qubits")
+
+    tail_depth = max(1, int(tail_depth))
+    angle_scale = float(angle_scale)
+    sparsity = float(sparsity)
+    bandwidth = max(1, int(bandwidth))
+    seed = int(seed)
+
+    disjoint_base = disjoint_preps_plus_tails(
+        num_qubits=num_qubits,
+        num_blocks=num_blocks,
+        block_prep="ghz",
+        tail_kind="hybrid",
+        tail_depth=tail_depth,
+        angle_scale=angle_scale,
+        sparsity=sparsity,
+        bandwidth=bandwidth,
+        seed=seed,
+    )
+
+    block_size = max(2, math.ceil(num_qubits / num_blocks))
+    neighbor_layers = max(1, num_blocks - 1)
+    rand_depth = max(tail_depth, 8)
+    diag_depth = max(tail_depth // 2, 6)
+
+    hybrid_rand = stitched_disjoint_rand_bandedqft_rand(
+        num_qubits=num_qubits,
+        block_size=block_size,
+        depth_pre=rand_depth,
+        depth_post=rand_depth,
+        qft_bandwidth=max(2, bandwidth),
+        neighbor_bridge_layers=neighbor_layers,
+        seed=seed + 101,
+    )
+
+    hybrid_diag = stitched_disjoint_diag_bandedqft_diag(
+        num_qubits=num_qubits,
+        block_size=block_size,
+        depth_pre=diag_depth,
+        depth_post=diag_depth,
+        qft_bandwidth=max(2, bandwidth + 1),
+        neighbor_bridge_layers=neighbor_layers,
+        seed=seed + 202,
+    )
+
+    qc = QuantumCircuit(num_qubits)
+    qc.compose(disjoint_base, inplace=True)
+    qc.barrier()
+    qc.compose(hybrid_rand, inplace=True)
+    qc.barrier()
+    qc.compose(hybrid_diag, inplace=True)
+
+    rng = np.random.default_rng(seed + 303)
+    clifford_oneq = ("h", "s", "sdg", "x", "z")
+    clifford_twoq = ("cx", "cz", "swap")
+
+    blocks: List[List[int]] = []
+    base = num_qubits // num_blocks
+    remainder = num_qubits % num_blocks
+    start = 0
+    for index in range(num_blocks):
+        size = base + (1 if index < remainder else 0)
+        block = list(range(start, start + size))
+        if block:
+            blocks.append(block)
+        start += size
+
+    per_block_depth = max(3, tail_depth // 2)
+    for index, block in enumerate(blocks):
+        for _ in range(per_block_depth):
+            if index % 2 == 0:
+                for qubit in block:
+                    getattr(qc, rng.choice(clifford_oneq))(qubit)
+                shuffled = block.copy()
+                rng.shuffle(shuffled)
+                for a, b in zip(shuffled[::2], shuffled[1::2]):
+                    getattr(qc, rng.choice(clifford_twoq))(a, b)
+            else:
+                for qubit in block:
+                    theta = float(rng.uniform(-angle_scale, angle_scale))
+                    qc.rz(theta, qubit)
+                shuffled = block.copy()
+                rng.shuffle(shuffled)
+                for a, b in zip(shuffled[::2], shuffled[1::2]):
+                    qc.cz(a, b)
+        qc.barrier(*block)
+
+    return qc
+
+
 class PlanValidationError(RuntimeError):
     """Raised when a planned SSD does not exercise all expected features."""
 
@@ -340,17 +450,15 @@ def _attempt_circuit_construction(
         if seed_index > 0:
             print(f"    -> resampling circuit with seed={seed_candidate}")
         for blocks in range(original_blocks, 0, -1):
-            circ_candidate = disjoint_preps_plus_tails(
+            circ_candidate = _build_ablation_circuit(
                 num_qubits=base_params["num_qubits"],
                 num_blocks=blocks,
-                block_prep="ghz",
-                tail_kind="hybrid",
                 tail_depth=base_params["tail_depth"],
                 angle_scale=base_params["angle_scale"],
                 sparsity=base_params["sparsity"],
                 bandwidth=base_params["bandwidth"],
                 seed=seed_candidate,
-            )
+                )
             analysis_candidate = analyze(circ_candidate)
             try:
                 planned_candidate = plan(analysis_candidate.ssd, cfg_full)
