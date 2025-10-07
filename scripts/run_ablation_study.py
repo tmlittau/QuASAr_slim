@@ -245,6 +245,23 @@ def _estimate_amp_ops(ssd: SSD, cfg: PlannerConfig) -> float:
     return float(total)
 
 
+class PlanValidationError(RuntimeError):
+    """Raised when a planned SSD does not exercise all expected features."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        missing_backends: Optional[Iterable[str]] = None,
+        needs_hybrid: bool = False,
+        max_qubits: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.missing_backends = tuple(sorted(set(missing_backends or ())))
+        self.needs_hybrid = bool(needs_hybrid)
+        self.max_qubits = int(max_qubits)
+
+
 def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
     partitions = plan.get("partitions") if isinstance(plan, MutableMapping) else None
     if not isinstance(partitions, Iterable):
@@ -274,14 +291,20 @@ def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
     if ddsim_available() and backend_counts.get("dd", 0) == 0:
         missing.append("dd")
     if missing:
-        raise RuntimeError(
+        raise PlanValidationError(
             "Expected the ablation circuit to exercise the following backends "
             f"but they were absent from the full plan: {', '.join(sorted(set(missing)))} "
             f"(largest partition has {max_qubits} qubits; consider reducing --num-blocks or"
-            " increasing --n)"
+            " increasing --n)",
+            missing_backends=missing,
+            max_qubits=max_qubits,
         )
     if not has_hybrid_chain:
-        raise RuntimeError("Expected at least one hybrid chain in the full plan")
+        raise PlanValidationError(
+            "Expected at least one hybrid chain in the full plan",
+            needs_hybrid=True,
+            max_qubits=max_qubits,
+        )
 
 
 def _run_variant(
@@ -612,36 +635,89 @@ def main(argv: Optional[List[str]] = None) -> None:
         }
         print(f"[{index}/{total}] Building circuit with params: {params}")
 
-        circ = disjoint_preps_plus_tails(
-            num_qubits=params["num_qubits"],
-            num_blocks=params["num_blocks"],
-            block_prep="ghz",
-            tail_kind="hybrid",
-            tail_depth=params["tail_depth"],
-            angle_scale=params["angle_scale"],
-            sparsity=params["sparsity"],
-            bandwidth=params["bandwidth"],
-            seed=params["seed"],
-        )
-
-        analysis = analyze(circ)
         planner_base = dict(
             max_ram_gb=float(args.max_ram_gb),
             conv_amp_ops_factor=float(args.conv_factor),
             sv_twoq_factor=float(args.twoq_factor),
         )
 
-        variants: Dict[str, VariantResult] = {}
-
         cfg_full = PlannerConfig(**planner_base)
-        variants["full"] = _run_variant("full", analysis.ssd, cfg_full, exec_cfg)
-        if variants["full"].plan is not None:
+
+        circ = None
+        analysis = None
+        original_blocks = int(params["num_blocks"])
+        adjusted_blocks = False
+        last_validation_error: Optional[PlanValidationError] = None
+        validated = False
+        for blocks in range(original_blocks, 0, -1):
+            circ_candidate = disjoint_preps_plus_tails(
+                num_qubits=params["num_qubits"],
+                num_blocks=blocks,
+                block_prep="ghz",
+                tail_kind="hybrid",
+                tail_depth=params["tail_depth"],
+                angle_scale=params["angle_scale"],
+                sparsity=params["sparsity"],
+                bandwidth=params["bandwidth"],
+                seed=params["seed"],
+            )
+            analysis_candidate = analyze(circ_candidate)
             try:
-                _validate_plan_features(variants["full"].plan)
-            except Exception as exc:
+                planned_candidate = plan(analysis_candidate.ssd, cfg_full)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                raise RuntimeError(
+                    f"Planning failed for candidate circuit (num_blocks={blocks}): {exc}"
+                ) from exc
+            try:
+                _validate_plan_features(planned_candidate.to_dict())
+            except PlanValidationError as exc:
+                if blocks > 1 and (exc.missing_backends or exc.needs_hybrid):
+                    reason_bits = []
+                    if exc.missing_backends:
+                        reason_bits.append(
+                            "missing backends: " + ", ".join(exc.missing_backends)
+                        )
+                    if exc.needs_hybrid:
+                        reason_bits.append("missing hybrid chain")
+                    next_blocks = blocks - 1
+                    print(
+                        "    -> ",
+                        "; ".join(reason_bits) or "validation failure",
+                        f"; retrying with num_blocks={next_blocks}",
+                        sep="",
+                    )
+                    adjusted_blocks = True
+                    last_validation_error = exc
+                    continue
                 raise RuntimeError(
                     f"Circuit sanity check failed for params {params}: {exc}"
                 ) from exc
+            circ = circ_candidate
+            analysis = analysis_candidate
+            params["num_blocks"] = blocks
+            if adjusted_blocks:
+                params.setdefault("num_blocks_requested", original_blocks)
+            validated = True
+            break
+        else:
+            detail = (
+                f": {last_validation_error}" if last_validation_error is not None else ""
+            )
+            raise RuntimeError(
+                "Circuit sanity check failed: unable to satisfy backend requirements"
+                + detail
+            )
+
+        if circ is None or analysis is None or not validated:
+            raise RuntimeError("Internal error: missing validated circuit")
+        if adjusted_blocks:
+            print(
+                f"    -> proceeding with num_blocks={params['num_blocks']} "
+                f"(requested {original_blocks})"
+            )
+
+        variants: Dict[str, VariantResult] = {}
+        variants["full"] = _run_variant("full", analysis.ssd, cfg_full, exec_cfg)
 
         merged_ssd = _collapse_to_single_partition(
             circ,
