@@ -97,6 +97,7 @@ def run_from_thresholds(
             max_ram_gb=max_ram_gb,
             conv_amp_ops_factor=conv_factor,
             sv_twoq_factor=twoq_factor,
+            prefer_dd=bool(use_sparse_tail),
         )
         log.info(
             "Planning SSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)",
@@ -108,8 +109,12 @@ def run_from_thresholds(
         ssd = plan(a.ssd, cfg)
         log.info("Plan completed in %.2fs", perf_counter() - plan_start)
         partition_summaries: List[str] = []
+        backend_groups: Dict[str, List[str]] = {}
+        backend_details: Dict[str, List[str]] = {}
         for node in ssd.partitions:
             backend = node.backend or "unassigned"
+            backend_groups.setdefault(backend, []).append(str(node.id))
+            node_meta = node.meta if isinstance(node.meta, dict) else {}
             if hasattr(node.circuit, "data"):
                 try:
                     gate_count = len(node.circuit.data)
@@ -120,8 +125,8 @@ def run_from_thresholds(
             else:
                 gate_count = None
 
-            chain_id = node.meta.get("chain_id") if node.meta else None
-            seq_index = node.meta.get("seq_index") if node.meta else None
+            chain_id = node_meta.get("chain_id") if node_meta else None
+            seq_index = node_meta.get("seq_index") if node_meta else None
             chain_bits: List[str] = []
             if chain_id is not None:
                 chain_bits.append(f"chain={chain_id}")
@@ -137,10 +142,20 @@ def run_from_thresholds(
             partition_summaries.append(
                 f"id={node.id} backend={backend} {chain_info} {gate_info}"
             )
+            planner_reason = node_meta.get("planner_reason") if node_meta else None
+            if planner_reason:
+                backend_details.setdefault(backend, []).append(
+                    f"id={node.id} reason={planner_reason}"
+                )
 
         log.info("Planner produced %d partitions", len(ssd.partitions))
         for summary in partition_summaries:
             log.info("  %s", summary)
+        for backend, ids in backend_groups.items():
+            log.info("Partitions using %s: %s", backend, ", ".join(ids))
+            if backend in backend_details:
+                for detail in backend_details[backend]:
+                    log.info("    %s", detail)
         log.info("Executing SSD (max_ram_gb=%.1f)", max_ram_gb)
         exec_start = perf_counter()
         exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=max_ram_gb))
