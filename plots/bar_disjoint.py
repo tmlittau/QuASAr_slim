@@ -84,8 +84,18 @@ def _extract_quasar_time(data: Dict[str, Any]) -> Optional[float]:
     return best
 
 
+def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
+    for key in ("wall_s_measured", "wall_s_estimated", "elapsed_s", "time_est_sec"):
+        if key in payload and payload[key] is not None:
+            try:
+                return float(payload[key])
+            except Exception:
+                continue
+    return None
+
+
 def _is_whole_baseline(entry: Dict[str, Any]) -> bool:
-    if (entry or {}).get("ok") is False:
+    if (entry or {}).get("ok") is False and _pick_elapsed(entry) is None:
         return False
     scope = (entry or {}).get("scope")
     if scope in {"whole", "global", "circuit"}:
@@ -117,16 +127,6 @@ def _flatten_baseline_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     return flat
 
 
-def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
-    for key in ("wall_s_measured", "wall_s_estimated", "elapsed_s", "time_est_sec"):
-        if key in payload and payload[key] is not None:
-            try:
-                return float(payload[key])
-            except Exception:
-                continue
-    return None
-
-
 def _best_whole_baseline(
     baselines: Dict[str, Any]
 ) -> Optional[Tuple[str, float, Dict[str, Any]]]:
@@ -153,7 +153,7 @@ def _best_whole_baseline(
     if best is not None:
         return best
     for entry in entries:
-        if entry.get("ok") is False:
+        if entry.get("ok") is False and _pick_elapsed(entry) is None:
             continue
         elapsed = _pick_elapsed(entry)
         if elapsed is None:
