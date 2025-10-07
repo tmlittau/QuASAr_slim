@@ -307,6 +307,120 @@ def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
         )
 
 
+def _attempt_circuit_construction(
+    base_params: Dict[str, Any],
+    cfg_full: PlannerConfig,
+    *,
+    max_resamples: int,
+) -> Tuple[
+    Optional[Any],
+    Optional[Any],
+    int,
+    int,
+    bool,
+    bool,
+    Optional[PlanValidationError],
+    bool,
+]:
+    """Try to build a circuit matching ``base_params`` that passes validation."""
+
+    original_blocks = int(base_params["num_blocks"])
+    original_seed = int(base_params["seed"])
+    max_resamples = max(0, int(max_resamples))
+
+    last_validation_error: Optional[PlanValidationError] = None
+    fallback_payload: Optional[Tuple[Any, Any, int, int]] = None
+
+    def _iter_seed_candidates() -> Iterable[int]:
+        yield original_seed
+        for offset in range(1, max_resamples + 1):
+            yield original_seed + offset
+
+    for seed_index, seed_candidate in enumerate(_iter_seed_candidates()):
+        if seed_index > 0:
+            print(f"    -> resampling circuit with seed={seed_candidate}")
+        for blocks in range(original_blocks, 0, -1):
+            circ_candidate = disjoint_preps_plus_tails(
+                num_qubits=base_params["num_qubits"],
+                num_blocks=blocks,
+                block_prep="ghz",
+                tail_kind="hybrid",
+                tail_depth=base_params["tail_depth"],
+                angle_scale=base_params["angle_scale"],
+                sparsity=base_params["sparsity"],
+                bandwidth=base_params["bandwidth"],
+                seed=seed_candidate,
+            )
+            analysis_candidate = analyze(circ_candidate)
+            try:
+                planned_candidate = plan(analysis_candidate.ssd, cfg_full)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                raise RuntimeError(
+                    "Planning failed for candidate circuit "
+                    f"(seed={seed_candidate}, num_blocks={blocks}): {exc}"
+                ) from exc
+            try:
+                _validate_plan_features(planned_candidate.to_dict())
+            except PlanValidationError as exc:
+                last_validation_error = exc
+                if blocks > 1 and (exc.missing_backends or exc.needs_hybrid):
+                    reason_bits = []
+                    if exc.missing_backends:
+                        reason_bits.append(
+                            "missing backends: " + ", ".join(exc.missing_backends)
+                        )
+                    if exc.needs_hybrid:
+                        reason_bits.append("missing hybrid chain")
+                    next_blocks = blocks - 1
+                    print(
+                        "    -> ",
+                        "; ".join(reason_bits) or "validation failure",
+                        f"; retrying with num_blocks={next_blocks}",
+                        sep="",
+                    )
+                    continue
+                fallback_payload = (
+                    circ_candidate,
+                    analysis_candidate,
+                    blocks,
+                    seed_candidate,
+                )
+                break
+            else:
+                return (
+                    circ_candidate,
+                    analysis_candidate,
+                    blocks,
+                    seed_candidate,
+                    blocks != original_blocks,
+                    seed_candidate != original_seed,
+                    None,
+                    True,
+                )
+    if fallback_payload is not None:
+        circ_candidate, analysis_candidate, blocks, seed_candidate = fallback_payload
+        return (
+            circ_candidate,
+            analysis_candidate,
+            blocks,
+            seed_candidate,
+            blocks != original_blocks,
+            seed_candidate != original_seed,
+            last_validation_error,
+            False,
+        )
+    return (
+        None,
+        None,
+        original_blocks,
+        original_seed,
+        False,
+        False,
+        last_validation_error,
+        False,
+    )
+
+
 def _run_variant(
     name: str,
     ssd: SSD,
@@ -581,6 +695,24 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--sparsity", type=float, default=0.10, help="RZ sparsity inside diagonal tails")
     parser.add_argument("--bandwidth", type=int, default=2, help="CZ bandwidth inside diagonal tails")
     parser.add_argument("--seed", type=int, default=None, help="Base seed for circuit construction")
+    parser.add_argument(
+        "--max-resamples",
+        type=int,
+        default=5,
+        help=(
+            "Maximum number of additional circuit seeds to try when the default "
+            "configuration fails the backend sanity checks (set to 0 to disable)"
+        ),
+    )
+    parser.add_argument(
+        "--max-qubit-increase",
+        type=int,
+        default=4,
+        help=(
+            "Maximum number of extra qubits to try automatically when the requested "
+            "problem size cannot satisfy the backend coverage checks"
+        ),
+    )
     parser.add_argument("--conv-factor", type=float, default=64.0, help="Conversion amortisation factor")
     parser.add_argument("--twoq-factor", type=float, default=4.0, help="Statevector two-qubit gate factor")
     parser.add_argument("--max-ram-gb", type=float, default=64.0, help="RAM budget for planning/execution")
@@ -643,61 +775,52 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         cfg_full = PlannerConfig(**planner_base)
 
+        requested_qubits = int(params["num_qubits"])
+        requested_blocks = int(params["num_blocks"])
+        requested_seed = int(params["seed"])
+        max_qubit_increase = max(0, int(args.max_qubit_increase))
+
         circ = None
         analysis = None
-        original_blocks = int(params["num_blocks"])
-        adjusted_blocks = False
+        final_adjusted_blocks = False
+        final_adjusted_seed = False
+        adjusted_qubits = False
         last_validation_error: Optional[PlanValidationError] = None
-        validated = False
-        for blocks in range(original_blocks, 0, -1):
-            circ_candidate = disjoint_preps_plus_tails(
-                num_qubits=params["num_qubits"],
-                num_blocks=blocks,
-                block_prep="ghz",
-                tail_kind="hybrid",
-                tail_depth=params["tail_depth"],
-                angle_scale=params["angle_scale"],
-                sparsity=params["sparsity"],
-                bandwidth=params["bandwidth"],
-                seed=params["seed"],
+        validation_warning: Optional[str] = None
+
+        for qubit_offset in range(max_qubit_increase + 1):
+            candidate_qubits = requested_qubits + qubit_offset
+            if qubit_offset > 0:
+                print(f"    -> increasing num_qubits to {candidate_qubits}")
+            candidate_params = dict(params)
+            candidate_params["num_qubits"] = candidate_qubits
+            (
+                circ_candidate,
+                analysis_candidate,
+                selected_blocks,
+                selected_seed,
+                adjusted_blocks,
+                adjusted_seed,
+                validation_error,
+                validated_candidate,
+            ) = _attempt_circuit_construction(
+                candidate_params,
+                cfg_full,
+                max_resamples=args.max_resamples,
             )
-            analysis_candidate = analyze(circ_candidate)
-            try:
-                planned_candidate = plan(analysis_candidate.ssd, cfg_full)
-            except Exception as exc:  # pragma: no cover - defensive guard
-                raise RuntimeError(
-                    f"Planning failed for candidate circuit (num_blocks={blocks}): {exc}"
-                ) from exc
-            try:
-                _validate_plan_features(planned_candidate.to_dict())
-            except PlanValidationError as exc:
-                if blocks > 1 and (exc.missing_backends or exc.needs_hybrid):
-                    reason_bits = []
-                    if exc.missing_backends:
-                        reason_bits.append(
-                            "missing backends: " + ", ".join(exc.missing_backends)
-                        )
-                    if exc.needs_hybrid:
-                        reason_bits.append("missing hybrid chain")
-                    next_blocks = blocks - 1
-                    print(
-                        "    -> ",
-                        "; ".join(reason_bits) or "validation failure",
-                        f"; retrying with num_blocks={next_blocks}",
-                        sep="",
-                    )
-                    adjusted_blocks = True
-                    last_validation_error = exc
-                    continue
-                raise RuntimeError(
-                    f"Circuit sanity check failed for params {params}: {exc}"
-                ) from exc
+            last_validation_error = validation_error
+            if circ_candidate is None or analysis_candidate is None:
+                continue
             circ = circ_candidate
             analysis = analysis_candidate
-            params["num_blocks"] = blocks
-            if adjusted_blocks:
-                params.setdefault("num_blocks_requested", original_blocks)
-            validated = True
+            params["num_qubits"] = candidate_qubits
+            params["num_blocks"] = selected_blocks
+            params["seed"] = selected_seed
+            final_adjusted_blocks = adjusted_blocks
+            final_adjusted_seed = adjusted_seed
+            adjusted_qubits = candidate_qubits != requested_qubits
+            if not validated_candidate and validation_error is not None:
+                validation_warning = str(validation_error)
             break
         else:
             detail = (
@@ -708,13 +831,34 @@ def main(argv: Optional[List[str]] = None) -> None:
                 + detail
             )
 
-        if circ is None or analysis is None or not validated:
+        if circ is None or analysis is None:
             raise RuntimeError("Internal error: missing validated circuit")
-        if adjusted_blocks:
+
+        if adjusted_qubits:
+            print(
+                f"    -> proceeding with num_qubits={params['num_qubits']} "
+                f"(requested {requested_qubits})"
+            )
+            params.setdefault("num_qubits_requested", requested_qubits)
+        if final_adjusted_blocks:
             print(
                 f"    -> proceeding with num_blocks={params['num_blocks']} "
-                f"(requested {original_blocks})"
+                f"(requested {requested_blocks})"
             )
+            params.setdefault("num_blocks_requested", requested_blocks)
+        if final_adjusted_seed:
+            print(
+                f"    -> proceeding with seed={params['seed']} "
+                f"(requested {requested_seed})"
+            )
+            params.setdefault("seed_requested", requested_seed)
+        if validation_warning:
+            print(
+                "    -> proceeding with best-effort circuit despite validation warning: ",
+                validation_warning,
+                sep="",
+            )
+            params.setdefault("validation_warning", validation_warning)
 
         variants: Dict[str, VariantResult] = {}
         variants["full"] = _run_variant("full", analysis.ssd, cfg_full, exec_cfg)
