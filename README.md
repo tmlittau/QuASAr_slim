@@ -12,6 +12,39 @@ Quick links:
 - Plotting utilities: `plots/`
 - Helper scripts: `scripts/`
 
+## Playground scripts
+
+The playground scripts under `scripts/` let you experiment with cutoff choices,
+hybrid-vs.-baseline speedups, and other what-if scenarios without launching the
+full benchmark suite. They all follow the same pattern:
+
+1. Choose the script that matches the parameter sweep you want to explore, e.g.
+   `playground_cutoff.py` for scanning Clifford prefix cutoffs or
+   `playground_speedup_depth.py` for depth-dependent speedups.
+2. Run the script with Python and pass the desired sweep ranges on the command
+   line. Every script exposes `--help` with a description of the available
+   flags. For example:
+
+   ```bash
+   python scripts/playground_cutoff.py \
+       --n 8 10 12 \
+       --min-depth 50 --max-depth 250 --step 5 \
+       --cutoff 0.7 0.8 0.9 \
+       --target-speedup 1.25 \
+       --out cutoff_sweep.png \
+       --save-json cutoff_sweep.json
+   ```
+
+   This prints the first depth that achieves the requested speedup for each
+   qubit count, saves a plot to `cutoff_sweep.png`, and persists the tabulated
+   thresholds to `cutoff_sweep.json` for use with
+   `scripts/bench_from_thresholds.py`.
+3. If you omit `--out`, the script opens an interactive matplotlib window when
+   possible; in headless environments it automatically writes a PNG next to the
+   script. All intermediate data (including JSON, when requested) are stored in
+   the working directory so they can be fed into downstream benchmarking or
+   plotting steps.
+
 ## Benchmarking from saved thresholds
 
 The `scripts/bench_from_thresholds.py` helper consumes the JSON thresholds
