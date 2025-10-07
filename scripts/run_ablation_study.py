@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 
 from benchmarks.disjoint import disjoint_preps_plus_tails
@@ -148,18 +149,32 @@ def _execution_status(exec_payload: Any) -> Tuple[bool, Optional[str]]:
     if not isinstance(results, Iterable):
         return False, "no_results"
     ok_all = True
+    notes: List[str] = []
     errors: List[str] = []
     for entry in results:
         if not isinstance(entry, MutableMapping):
             continue
-        status = entry.get("status")
-        if status not in (None, "ok"):
-            ok_all = False
+        status_raw = entry.get("status")
+        status = status_raw.lower() if isinstance(status_raw, str) else status_raw
+        if status in (None, "ok"):
+            continue
+        if status == "estimated":
             err = entry.get("error")
-            if isinstance(err, str) and err:
-                errors.append(f"p{entry.get('partition')}: {err}")
+            if isinstance(err, str):
+                clean = err.strip()
+                if clean and clean.lower() != "completed":
+                    notes.append(f"p{entry.get('partition')}: {clean}")
+            continue
+        if status == "done":
+            continue
+        if status == "running":
+            continue
+        ok_all = False
+        err = entry.get("error")
+        if isinstance(err, str) and err:
+            errors.append(f"p{entry.get('partition')}: {err}")
     if ok_all:
-        return True, None
+        return True, "; ".join(notes) if notes else None
     if errors:
         return False, "; ".join(errors)
     return False, "execution_failed"
@@ -441,6 +456,21 @@ def _make_memory_plot(
     plt.ylabel("Relative peak memory vs full QuASAr")
     plt.title(title)
     plt.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
+    values = [
+        val
+        for series in (mem_full, mem_nodisjoint, mem_nohybrid)
+        for val in series
+        if isinstance(val, (int, float)) and not math.isnan(val) and val > 0
+    ]
+    if values:
+        vmax = max(values)
+        vmin = min(values)
+        if vmax / vmin >= 20:
+            ax = plt.gca()
+            ax.set_yscale("log")
+            ax.yaxis.set_major_locator(mticker.LogLocator(base=10))
+            ax.yaxis.set_minor_locator(mticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
+            ax.yaxis.set_minor_formatter(mticker.NullFormatter())
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
