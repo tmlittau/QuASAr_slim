@@ -26,9 +26,17 @@ def _choose_backend(metrics: Dict[str, Any], cfg: PlannerConfig) -> Tuple[str, s
     sv_bytes = estimate_sv_bytes(n)
     cap = int(cfg.max_ram_gb * (1024**3))
     if sv_bytes <= cap:
-        if cfg.prefer_dd and ddsim_available() and n >= 20:
+        dd_ready = ddsim_available()
+        if cfg.prefer_dd and dd_ready and n >= 20:
             return "dd", "prefer_dd & n>=20 & ddsim_available"
-        return "sv", "fits_ram & (n<20 or prefer_dd=False or ddsim_unavailable)"
+        reasons = ["fits_ram"]
+        if n < 20:
+            reasons.append("n<20")
+        if not cfg.prefer_dd:
+            reasons.append("prefer_dd=False")
+        if cfg.prefer_dd and not dd_ready:
+            reasons.append("ddsim_unavailable")
+        return "sv", " & ".join(reasons)
     if ddsim_available():
         return "dd", "sv_exceeds_ram & ddsim_available"
     if stim_available():
