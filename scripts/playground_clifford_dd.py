@@ -183,6 +183,12 @@ def main() -> None:
             series_speedups: List[float] = []
             series_depths: List[int] = []
             feasible_mask: List[bool] = []
+            first_depth: Optional[int] = None
+            first_dd_total_norm: Optional[float] = None
+            first_hybrid_norm: Optional[float] = None
+            first_speedup: Optional[float] = None
+            first_prefix_sparsity: Optional[float] = None
+            first_tail_sparsity: Optional[float] = None
             for depth in depths:
                 res = analyze_case(
                     n=n,
@@ -214,6 +220,13 @@ def main() -> None:
                     f"{n},{cutoff},{depth},{int(feasible)},{speedup_str},"
                     f"{dd_str},{hyb_str},{pref_str},{tail_str}"
                 )
+                if feasible and first_depth is None:
+                    first_depth = depth
+                    first_dd_total_norm = dd_norm
+                    first_hybrid_norm = hyb_norm
+                    first_speedup = speedup
+                    first_prefix_sparsity = pref_sp
+                    first_tail_sparsity = tail_sp
             records.append(
                 {
                     "n": n,
@@ -221,6 +234,12 @@ def main() -> None:
                     "depths": series_depths,
                     "speedups": series_speedups,
                     "feasible": feasible_mask,
+                    "first_depth": first_depth,
+                    "first_dd_total_norm": first_dd_total_norm,
+                    "first_hybrid_norm": first_hybrid_norm,
+                    "first_speedup": first_speedup,
+                    "first_prefix_sparsity": first_prefix_sparsity,
+                    "first_tail_sparsity": first_tail_sparsity,
                 }
             )
 
