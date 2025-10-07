@@ -8,7 +8,10 @@ import os
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
-from benchmarks.hybrid import clifford_prefix_rot_tail
+from benchmarks.hybrid import (
+    clifford_prefix_rot_tail,
+    sparse_clifford_prefix_sparse_tail,
+)
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
@@ -42,6 +45,7 @@ def run_from_thresholds(
     max_ram_gb: float,
     sv_ampops_per_sec: Optional[float],
     baseline_timeout_s: Optional[float],
+    use_sparse_tail: bool,
     log: logging.Logger,
 ) -> None:
     meta = thr_json.get("meta", {})
@@ -67,7 +71,15 @@ def run_from_thresholds(
         log.info("Running threshold case: n=%d depth=%d cutoff=%.2f", n, depth, cutoff)
 
         build_start = perf_counter()
-        circ = clifford_prefix_rot_tail(
+        builder = (
+            sparse_clifford_prefix_sparse_tail if use_sparse_tail else clifford_prefix_rot_tail
+        )
+        kind = (
+            "sparse_clifford_prefix_sparse_tail"
+            if use_sparse_tail
+            else "clifford_prefix_rot_tail"
+        )
+        circ = builder(
             num_qubits=n,
             depth=depth,
             cutoff=float(cutoff),
@@ -81,8 +93,17 @@ def run_from_thresholds(
         a = analyze(circ)
         log.info("Analyze completed in %.2fs", perf_counter() - analyze_start)
 
-        cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
-        log.info("Planning SSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)", max_ram_gb, conv_factor, twoq_factor)
+        cfg = PlannerConfig(
+            max_ram_gb=max_ram_gb,
+            conv_amp_ops_factor=conv_factor,
+            sv_twoq_factor=twoq_factor,
+        )
+        log.info(
+            "Planning SSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)",
+            max_ram_gb,
+            conv_factor,
+            twoq_factor,
+        )
         plan_start = perf_counter()
         ssd = plan(a.ssd, cfg)
         log.info("Plan completed in %.2fs", perf_counter() - plan_start)
@@ -176,14 +197,22 @@ def run_from_thresholds(
             )
 
         rec_out = {
-            "case": {"kind": "clifford_prefix_rot_tail", "params": {"num_qubits": n, "depth": depth, "cutoff": cutoff, "angle_scale": angle_scale}},
+            "case": {
+                "kind": kind,
+                "params": {
+                    "num_qubits": n,
+                    "depth": depth,
+                    "cutoff": cutoff,
+                    "angle_scale": angle_scale,
+                },
+            },
             "planner": {"conv_factor": conv_factor, "twoq_factor": twoq_factor},
             "quasar": {"wall_elapsed_s": exec_payload.get("meta", {}).get("wall_elapsed_s", None),
                        "execution": exec_payload,
                        "analysis": {"global": a.metrics_global, "ssd": ssd.to_dict()}},
             "baselines": bl,
         }
-        stem = f"clifford_prefix_rot_tail_n-{n}_d-{depth}_cut-{cutoff}"
+        stem = f"{kind}_n-{n}_d-{depth}_cut-{cutoff}"
         with open(os.path.join(out_dir, stem + ".json"), "w") as f:
             json.dump(rec_out, f, indent=2)
 
@@ -216,6 +245,11 @@ def main():
     ap.add_argument("--sv-ampops-per-sec", type=float, default=None)
     ap.add_argument("--baseline-timeout-s", type=float, default=None,
                     help="Timeout in seconds for each baseline backend (default: no timeout)")
+    ap.add_argument(
+        "--dd",
+        action="store_true",
+        help="Use a sparse hybrid circuit variant with a decision-diagram-friendly tail.",
+    )
     ap.add_argument("--log-level", type=str, default="INFO")
     args = ap.parse_args()
 
@@ -234,6 +268,7 @@ def main():
         max_ram_gb=args.max_ram_gb,
         sv_ampops_per_sec=args.sv_ampops_per_sec,
         baseline_timeout_s=args.baseline_timeout_s,
+        use_sparse_tail=bool(args.dd),
         log=log,
     )
 

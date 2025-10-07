@@ -14,6 +14,7 @@ __all__ = [
     "stitched_disjoint_diag_bandedqft_diag",
     "clifford_plus_random_rotations",
     "clifford_prefix_rot_tail",
+    "sparse_clifford_prefix_sparse_tail",
     "CIRCUIT_REGISTRY",
     "build",
 ]
@@ -254,6 +255,70 @@ def clifford_plus_random_rotations(
     return qc
 
 
+def _apply_sparse_clifford_prefix_layer(
+    qc: QuantumCircuit,
+    rng: np.random.Generator,
+    *,
+    single_qubit_prob: float,
+    two_qubit_prob: float,
+    max_pair_distance: int,
+) -> None:
+    num_qubits = qc.num_qubits
+    for qubit in range(num_qubits):
+        if rng.random() < single_qubit_prob:
+            getattr(qc, rng.choice(CLIFFORD_ONEQ))(qubit)
+
+    if num_qubits < 2 or two_qubit_prob <= 0:
+        return
+
+    for qubit in range(num_qubits):
+        if rng.random() >= two_qubit_prob:
+            continue
+        offset = int(rng.integers(1, max(2, max_pair_distance + 1)))
+        direction = -1 if rng.random() < 0.5 else 1
+        target = qubit + direction * offset
+        if target < 0 or target >= num_qubits:
+            target = qubit - direction * offset
+        if target < 0 or target >= num_qubits or target == qubit:
+            continue
+        control, other = (qubit, target) if qubit < target else (target, qubit)
+        if rng.random() < 0.5:
+            qc.cx(control, other)
+        else:
+            qc.cz(control, other)
+
+
+def _apply_sparse_diag_tail_layer(
+    qc: QuantumCircuit,
+    rng: np.random.Generator,
+    *,
+    angle_scale: float,
+    sparsity: float,
+    bandwidth: int,
+) -> None:
+    num_qubits = qc.num_qubits
+    if num_qubits == 0:
+        return
+
+    count = max(1, int(round(sparsity * num_qubits)))
+    count = min(count, num_qubits)
+    idxs = rng.choice(num_qubits, size=count, replace=False)
+    for qubit in idxs:
+        theta = float(rng.uniform(-angle_scale, angle_scale))
+        qc.rz(theta, int(qubit))
+
+    if num_qubits < 2:
+        return
+
+    pair_count = max(1, count // 2)
+    for _ in range(pair_count):
+        i = int(rng.integers(0, num_qubits - 1))
+        max_offset = max(1, min(bandwidth, num_qubits - 1 - i))
+        offset = int(rng.integers(1, max_offset + 1))
+        j = i + offset
+        qc.cz(i, j)
+
+
 def clifford_prefix_rot_tail(
     *,
     num_qubits: int,
@@ -275,6 +340,47 @@ def clifford_prefix_rot_tail(
     return qc
 
 
+def sparse_clifford_prefix_sparse_tail(
+    *,
+    num_qubits: int,
+    depth: int,
+    cutoff: float,
+    angle_scale: float = 0.1,
+    prefix_single_prob: float = 0.4,
+    prefix_twoq_prob: float = 0.15,
+    prefix_max_pair_distance: int = 2,
+    tail_sparsity: float = 0.08,
+    tail_bandwidth: int = 2,
+    seed: int = 1,
+) -> QuantumCircuit:
+    cutoff = max(0.0, min(1.0, float(cutoff)))
+    depth = int(depth)
+    rng = np.random.default_rng(int(seed))
+    qc = QuantumCircuit(int(num_qubits))
+    d_pre = int(round(depth * cutoff))
+    d_tail = max(0, depth - d_pre)
+
+    for _ in range(d_pre):
+        _apply_sparse_clifford_prefix_layer(
+            qc,
+            rng,
+            single_qubit_prob=prefix_single_prob,
+            two_qubit_prob=prefix_twoq_prob,
+            max_pair_distance=max(1, int(prefix_max_pair_distance)),
+        )
+
+    for _ in range(d_tail):
+        _apply_sparse_diag_tail_layer(
+            qc,
+            rng,
+            angle_scale=angle_scale,
+            sparsity=tail_sparsity,
+            bandwidth=max(1, int(tail_bandwidth)),
+        )
+
+    return qc
+
+
 CIRCUIT_REGISTRY: Dict[str, Any] = {
     "ghz_clusters_random": ghz_clusters_random,
     "random_clifford": random_clifford,
@@ -282,6 +388,7 @@ CIRCUIT_REGISTRY: Dict[str, Any] = {
     "stitched_diag_bandedqft_diag": stitched_disjoint_diag_bandedqft_diag,
     "clifford_plus_rot": clifford_plus_random_rotations,
     "clifford_prefix_rot_tail": clifford_prefix_rot_tail,
+    "sparse_clifford_prefix_sparse_tail": sparse_clifford_prefix_sparse_tail,
 }
 
 
