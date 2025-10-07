@@ -392,8 +392,8 @@ def _make_runtime_plot(
     x = np.arange(len(labels))
     width = 0.25
 
-    plt.figure(figsize=(max(8, len(labels) * 1.5), 5))
-    plt.bar(
+    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.5), 5))
+    bars_full = ax.bar(
         x - width,
         rel_full,
         width,
@@ -401,7 +401,7 @@ def _make_runtime_plot(
         color=PASTEL_COLORS.get("tableau"),
         edgecolor=EDGE_COLOR,
     )
-    plt.bar(
+    bars_nodisjoint = ax.bar(
         x,
         rel_nodisjoint,
         width,
@@ -409,7 +409,7 @@ def _make_runtime_plot(
         color=PASTEL_COLORS.get("sv"),
         edgecolor=EDGE_COLOR,
     )
-    plt.bar(
+    bars_nohybrid = ax.bar(
         x + width,
         rel_nohybrid,
         width,
@@ -418,14 +418,32 @@ def _make_runtime_plot(
         edgecolor=EDGE_COLOR,
     )
 
-    plt.xticks(x, labels, rotation=25, ha="right")
-    plt.ylabel("Relative runtime vs full QuASAr")
-    plt.title(title)
-    plt.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.close()
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=25, ha="right")
+    ax.set_ylabel("Relative runtime vs full QuASAr")
+    ax.set_title(title)
+    ax.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
+    ax.set_yscale("log")
+
+    for bars, values in ((bars_nodisjoint, rel_nodisjoint), (bars_nohybrid, rel_nohybrid)):
+        for bar, value in zip(bars, values):
+            if value is None or math.isnan(value) or value <= 0:
+                continue
+            text = f"{value:.1f}×"
+            text_y = value * 1.1
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                text_y,
+                text,
+                ha="center",
+                va="bottom",
+                fontsize=10,
+            )
+
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
 
 
 def _make_memory_plot(
