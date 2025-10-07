@@ -193,12 +193,14 @@ All plotters now live under `plots/`:
 - `plots/bar_disjoint.py` — parallel disjoint benchmark comparison. Produces a
   two-bar chart per `(n, blocks)` pair showing QuASAr's parallel runtime next to
   the best whole-circuit baseline with the simulator type encoded in the bar
-  colour.
+  colour. Pass `--memory-out` (or `--memory-out=auto` alongside `--out`) to also
+  render the memory comparison plot in a single invocation.
 - `plots/compare_total.py` — convenience helpers to compare total QuASAr vs
   baseline runtimes or visualise SSD partition timings.
 
 Each plotter accepts `--suite-dir` (directory with suite JSON files) and `--out`
-for the output image path.
+for the output image path; `bar_disjoint` additionally exposes `--memory-out`
+to render the memory comparison bars.
 
 ## Ablation study script
 

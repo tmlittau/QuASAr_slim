@@ -494,9 +494,29 @@ def main() -> None:
     ap.add_argument("--suite-dir", type=str, required=True)
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--title", type=str, default=None)
+    ap.add_argument(
+        "--memory-out",
+        type=str,
+        default=None,
+        help=(
+            "Optional output path for the memory comparison plot. Pass 'auto' to "
+            "derive the path from --out by appending '_memory' before the "
+            "extension."
+        ),
+    )
     args = ap.parse_args()
 
     make_plot(args.suite_dir, out=args.out, title=args.title)
+
+    memory_out = args.memory_out
+    if memory_out == "auto":
+        if not args.out:
+            raise SystemExit("--memory-out=auto requires --out to be specified")
+        root, ext = os.path.splitext(args.out)
+        memory_out = f"{root}_memory{ext}" if ext else f"{args.out}_memory"
+
+    if memory_out is not None:
+        make_memory_plot(args.suite_dir, out=memory_out, title=args.title)
 
 
 if __name__ == "__main__":
