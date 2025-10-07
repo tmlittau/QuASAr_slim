@@ -396,6 +396,8 @@ def make_memory_plot(
     suite_dir: str,
     out: Optional[str] = None,
     title: Optional[str] = None,
+    *,
+    log_scale: bool = False,
 ) -> None:
     cases = _load_cases(suite_dir)
     if not cases:
@@ -421,24 +423,52 @@ def make_memory_plot(
         baseline_mem = baseline_mems[idx]
         baseline_method = baseline_methods[idx]
 
+        quasar_height: Optional[float] = None
+        baseline_height: Optional[float] = None
+
         if np.isfinite(quasar_mem) and quasar_mem > 0:
+            quasar_height = _bytes_to_gib(quasar_mem)
             ax.bar(
                 0,
-                _bytes_to_gib(quasar_mem),
+                quasar_height,
                 width,
                 color=QUASAR_COLOR,
                 edgecolor=EDGE_COLOR,
             )
 
         if np.isfinite(baseline_mem) and baseline_mem > 0:
+            baseline_height = _bytes_to_gib(baseline_mem)
             ax.bar(
                 1,
-                _bytes_to_gib(baseline_mem),
+                baseline_height,
                 width,
                 color=BASELINE_COLORS.get(baseline_method, FALLBACK_COLOR),
                 edgecolor=EDGE_COLOR,
                 alpha=0.9,
             )
+
+        if (
+            quasar_height is not None
+            and baseline_height is not None
+            and quasar_mem is not None
+            and baseline_mem is not None
+            and quasar_mem > 0
+        ):
+            memory_saving = baseline_mem / quasar_mem
+            if memory_saving > 0:
+                if log_scale:
+                    y_position = quasar_height * 1.2
+                else:
+                    y_position = quasar_height + 0.05 * max(quasar_height, baseline_height)
+                ax.text(
+                    0,
+                    y_position,
+                    f"{memory_saving:.1f}×",
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                    fontweight="bold",
+                )
 
         ax.set_xticks([0, 1])
         ax.set_xticklabels(["QuASAr", "Baseline"])
@@ -446,7 +476,13 @@ def make_memory_plot(
         ax.set_title(labels[idx])
         ax.grid(axis="y", alpha=0.3)
         if idx == 0:
-            ax.set_ylabel("Memory (GiB)")
+            ylabel = "Memory (GiB)"
+            if log_scale:
+                ylabel += " (log scale)"
+            ax.set_ylabel(ylabel)
+
+        if log_scale:
+            ax.set_yscale("log")
 
     fig.suptitle(title or "QuASAr (parallel disjoint) memory vs baseline")
 
@@ -504,6 +540,11 @@ def main() -> None:
             "extension."
         ),
     )
+    ap.add_argument(
+        "--log",
+        action="store_true",
+        help="Plot memory comparisons on a logarithmic scale.",
+    )
     args = ap.parse_args()
 
     make_plot(args.suite_dir, out=args.out, title=args.title)
@@ -516,7 +557,12 @@ def main() -> None:
         memory_out = f"{root}_memory{ext}" if ext else f"{args.out}_memory"
 
     if memory_out is not None:
-        make_memory_plot(args.suite_dir, out=memory_out, title=args.title)
+        make_memory_plot(
+            args.suite_dir,
+            out=memory_out,
+            title=args.title,
+            log_scale=args.log,
+        )
 
 
 if __name__ == "__main__":
