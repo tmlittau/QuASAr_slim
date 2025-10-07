@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -13,10 +13,25 @@ from benchmarks.hybrid import clifford_prefix_rot_tail
 from quasar.cost_estimator import CostEstimator, CostParams
 from quasar.gate_metrics import circuit_metrics, gate_name, CLIFFORD_GATES
 
+try:
+    from qiskit.circuit import CircuitInstruction
+except Exception:  # pragma: no cover - optional dependency guard
+    CircuitInstruction = None  # type: ignore[assignment]
+
+
+def _as_operation_tuple(inst: Any) -> Tuple[Any, Tuple[Any, ...], Tuple[Any, ...]]:
+    """Return ``(operation, qargs, cargs)`` without touching legacy tuple access."""
+
+    if CircuitInstruction is not None and isinstance(inst, CircuitInstruction):
+        return inst.operation, tuple(inst.qubits), tuple(inst.clbits)
+    operation, qargs, cargs = inst
+    return operation, tuple(qargs), tuple(cargs)
+
 
 def _split_at_first_nonclifford(qc) -> Optional[int]:
-    for idx, (inst, _, _) in enumerate(qc.data):
-        if gate_name(inst) not in CLIFFORD_GATES:
+    for idx, inst in enumerate(qc.data):
+        operation, _, _ = _as_operation_tuple(inst)
+        if gate_name(operation) not in CLIFFORD_GATES:
             return idx
     return None
 
@@ -25,9 +40,10 @@ def _build_subcircuit_like(parent, ops: List[Any]):
     from qiskit import QuantumCircuit
 
     sub = QuantumCircuit(parent.num_qubits)
-    for inst, qargs, cargs in ops:
+    for inst in ops:
+        operation, qargs, cargs = _as_operation_tuple(inst)
         local_qargs = [sub.qubits[parent.find_bit(q).index] for q in qargs]
-        sub.append(inst, local_qargs, cargs)
+        sub.append(operation, local_qargs, cargs)
     sub.metadata = dict(getattr(parent, "metadata", {}) or {})
     return sub
 
@@ -109,22 +125,22 @@ def main() -> None:
             "with a Clifford prefix and report estimated speedups."
         )
     )
-    ap.add_argument("--n", type=int, nargs="+", default=[8, 10, 12, 14], help="Qubit counts to sweep.")
-    ap.add_argument("--min-depth", type=int, default=50, help="Minimum total depth (inclusive).")
-    ap.add_argument("--max-depth", type=int, default=400, help="Maximum total depth (inclusive).")
+    ap.add_argument("--n", type=int, nargs="+", default=[6, 8, 10, 12], help="Qubit counts to sweep.")
+    ap.add_argument("--min-depth", type=int, default=20, help="Minimum total depth (inclusive).")
+    ap.add_argument("--max-depth", type=int, default=200, help="Maximum total depth (inclusive).")
     ap.add_argument("--step", type=int, default=1, help="Depth step size.")
     ap.add_argument(
         "--cutoff",
         type=float,
         nargs="+",
-        default=[0.8],
+        default=[0.9],
         help="Clifford prefix fraction (e.g. 0.8 = 80% prefix).",
     )
-    ap.add_argument("--angle-scale", type=float, default=0.1)
-    ap.add_argument("--conv-factor", type=float, default=64.0)
-    ap.add_argument("--twoq-factor", type=float, default=4.0)
-    ap.add_argument("--prefix-sparsity-min", type=float, default=0.5)
-    ap.add_argument("--tail-sparsity-min", type=float, default=0.2)
+    ap.add_argument("--angle-scale", type=float, default=0.05)
+    ap.add_argument("--conv-factor", type=float, default=32.0)
+    ap.add_argument("--twoq-factor", type=float, default=2.0)
+    ap.add_argument("--prefix-sparsity-min", type=float, default=0.05)
+    ap.add_argument("--tail-sparsity-min", type=float, default=0.05)
     ap.add_argument(
         "--target-speedup",
         type=float,

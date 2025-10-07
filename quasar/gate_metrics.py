@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Utility helpers for extracting gate metrics from Qiskit circuits."""
 
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Iterator, Tuple
 
 __all__ = [
     "CLIFFORD_GATES",
@@ -13,6 +13,21 @@ __all__ = [
     "estimate_sparsity",
     "circuit_metrics",
 ]
+
+
+def _unpack_instruction(inst: Any) -> Tuple[Any, Tuple[Any, ...], Tuple[Any, ...]]:
+    """Return ``(operation, qargs, cargs)`` regardless of instruction type."""
+
+    try:
+        return inst.operation, tuple(inst.qubits), tuple(inst.clbits)
+    except AttributeError:
+        operation, qargs, cargs = inst
+        return operation, tuple(qargs), tuple(cargs)
+
+
+def _iter_ops(ops: Iterable[Any]) -> Iterator[Tuple[Any, Tuple[Any, ...], Tuple[Any, ...]]]:
+    for inst in ops:
+        yield _unpack_instruction(inst)
 
 CLIFFORD_GATES = {
     "i",
@@ -92,8 +107,9 @@ def _branching_effect(name: str, arity: int) -> Tuple[bool, bool]:
 def estimate_sparsity(num_qubits: int, ops: Iterable[Tuple[Any, Any, Any]]) -> float:
     """Return a heuristic sparsity estimate for a circuit fragment.
 
-    ``ops`` is expected to be an iterable of ``(instruction, qargs, cargs)``
-    tuples as provided by ``QuantumCircuit.data``.  The heuristic tracks an
+    ``ops`` may be an iterable of ``CircuitInstruction`` objects or legacy
+    ``(instruction, qargs, cargs)`` tuples as provided by ``QuantumCircuit.data``.
+    The heuristic tracks an
     estimate of the number of non-zero amplitudes created from ``|0…0>`` by
     counting the branching operations.  Uncontrolled branching doubles the
     count while controlled versions add a single amplitude.  The result is
@@ -106,8 +122,8 @@ def estimate_sparsity(num_qubits: int, ops: Iterable[Tuple[Any, Any, Any]]) -> f
 
     full_dim = 1 << num_qubits
     nnz = 1
-    for inst, qargs, _ in ops:
-        name = gate_name(inst)
+    for operation, qargs, _ in _iter_ops(ops):
+        name = gate_name(operation)
         branches, controlled = _branching_effect(name, len(qargs))
         if branches:
             nnz = min(full_dim, nnz * 2)
@@ -138,8 +154,8 @@ def circuit_metrics(circ: Any) -> Dict[str, Any]:
     twoq = 0
     t_count = 0
     rotations = 0
-    for inst, qargs, _ in circ.data:
-        name = gate_name(inst)
+    for operation, qargs, _ in _iter_ops(circ.data):
+        name = gate_name(operation)
         total += 1
         if name in {"t", "tdg"}:
             t_count += 1
