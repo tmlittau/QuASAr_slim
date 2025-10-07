@@ -92,17 +92,47 @@ def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
         tail = _build_subcircuit_like(node.circuit, tail_ops)
         pre_metrics = circuit_metrics(pre)
         tail_metrics = circuit_metrics(tail)
-        pre_node = PartitionNode(id=int(f"{node.id}0"), qubits=list(node.qubits), circuit=pre,
-                                 metrics=pre_metrics, meta=dict(node.meta))
-        tail_node = PartitionNode(id=int(f"{node.id}1"), qubits=list(node.qubits), circuit=tail,
-                                  metrics=tail_metrics, meta=dict(node.meta))
+        pre_node = PartitionNode(
+            id=int(f"{node.id}0"),
+            qubits=list(node.qubits),
+            circuit=pre,
+            metrics=pre_metrics,
+            meta=dict(node.meta),
+        )
+        tail_node = PartitionNode(
+            id=int(f"{node.id}1"),
+            qubits=list(node.qubits),
+            circuit=tail,
+            metrics=tail_metrics,
+            meta=dict(node.meta),
+        )
         pre_node.set_backend("tableau" if stim_available() else "sv")
-        tail_node.set_backend("sv")
+        tail_backend, tail_backend_reason = _choose_backend(tail_metrics, cfg)
+        if (
+            tail_backend != "dd"
+            and cfg.prefer_dd
+            and ddsim_available()
+            and float(tail_metrics.get("sparsity", 0.0)) >= 0.5
+        ):
+            tail_backend = "dd"
+            tail_backend_reason = (
+                f"hybrid_tail_sparse(s={float(tail_metrics.get('sparsity', 0.0)):.2f})"
+            )
+        tail_node.set_backend(tail_backend)
         chain_id = f"p{node.id}_hybrid"
         pre_node.meta.update({"chain_id": chain_id, "seq_index": 0,
                               "planner_reason": f"hybrid split@{split_idx}; conv={cmp['conversion']/(1<<n):.1f}, tail={cmp['sv_tail']/(1<<n):.1f}, hybrid={cmp['hybrid_total']/(1<<n):.1f} < sv={cmp['sv_total']/(1<<n):.1f} (ampops/2^n)"})
-        tail_node.meta.update({"chain_id": chain_id, "seq_index": 1,
-                               "planner_reason": f"hybrid tail; sv_tail={cmp['sv_tail']/(1<<n):.1f} (ampops/2^n)"})
+        tail_reason = (
+            f"hybrid tail -> {tail_backend}; {tail_backend_reason}; "
+            f"sv_tail={cmp['sv_tail']/(1<<n):.1f} (ampops/2^n)"
+        )
+        tail_node.meta.update(
+            {
+                "chain_id": chain_id,
+                "seq_index": 1,
+                "planner_reason": tail_reason,
+            }
+        )
         return [pre_node, tail_node]
     return None
 
