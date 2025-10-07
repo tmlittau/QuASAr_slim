@@ -124,9 +124,17 @@ def run_case(
 
     if circ is not None:
         try:
+            if args.baseline is None:
+                which = ["tableau", "sv", "dd"]
+            else:
+                baseline = args.baseline
+                if baseline == "tab":
+                    baseline = "tableau"
+                which = [baseline]
+
             baselines = run_baselines(
                 circ,
-                which=["tableau", "sv", "dd"],
+                which=which,
                 per_partition=False,
                 max_ram_gb=float(args.max_ram_gb),
                 sv_ampops_per_sec=args.sv_ampops_per_sec,
@@ -170,6 +178,13 @@ def parse_args() -> argparse.Namespace:
         help="Number of parallel workers to use for executing disjoint blocks (0 = auto)",
     )
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for circuit construction")
+    parser.add_argument(
+        "--baseline",
+        type=str,
+        default=None,
+        choices=["tableau", "sv", "dd", "tab"],
+        help="Restrict baselines to a single backend (tableau/tab, sv, or dd)",
+    )
     return parser.parse_args()
 
 

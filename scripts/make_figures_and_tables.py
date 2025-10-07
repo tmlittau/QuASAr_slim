@@ -308,6 +308,11 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         runner_args.extend(["--parallel-workers", str(args.parallel_workers)])
     if args.seed is not None:
         runner_args.extend(["--seed", str(args.seed)])
+    if args.baseline is not None:
+        baseline = args.baseline.lower()
+        if baseline == "tab":
+            baseline = "tableau"
+        runner_args.extend(["--baseline", baseline])
 
     _ensure_suite(
         "run_disjoint_suite.py",
@@ -557,6 +562,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override the number of parallel workers when executing disjoint blocks",
+    )
+    disjoint.add_argument(
+        "--baseline",
+        type=str,
+        choices=["tableau", "tab", "sv", "dd"],
+        default=None,
+        help="Restrict baselines to a single backend (tableau/tab, sv, or dd)",
     )
     disjoint.set_defaults(func=cmd_disjoint)
 

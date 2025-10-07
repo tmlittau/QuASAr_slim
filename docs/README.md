@@ -168,6 +168,8 @@ Key options:
   through to `suites/run_disjoint_suite.py`.
 - `--parallel-workers` controls how many worker processes QuASAr should use
   when executing disjoint blocks in parallel (defaults to an automatic choice).
+- `--baseline` limits the baseline comparison to a single backend. Accepts
+  `tableau`/`tab`, `sv`, or `dd` and is forwarded to the suite runner.
 
 #### Consolidated tables
 
