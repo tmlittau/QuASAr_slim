@@ -200,6 +200,54 @@ All plotters now live under `plots/`:
 Each plotter accepts `--suite-dir` (directory with suite JSON files) and `--out`
 for the output image path.
 
+## Ablation study script
+
+`scripts/run_ablation_study.py` automates the hybrid/disjoint ablation runs
+referenced in the paper. It sweeps a list of qubit counts, constructs the
+matching block-disjoint hybrid circuits, and benchmarks three QuASAr variants:
+
+- **Full QuASAr** — disjoint partitioning and hybrid tail splitting enabled
+  (baseline).
+- **No disjoint partitioning** — collapses the circuit into a single partition
+  while retaining hybrid tail handling.
+- **No hybrid splitting** — keeps the disjoint blocks but disables the hybrid
+  prefix/tail optimisation.
+
+The script writes a JSON summary plus two bar charts in the chosen output
+directory. All runtimes are reported relative to the full QuASAr baseline so
+you can read off the slowdown introduced by each ablation.
+
+Typical invocation:
+
+```bash
+python -m scripts.run_ablation_study \
+    --n 16 24 32 \
+    --num-blocks 4 \
+    --out-dir ablation_runs \
+    --json-name ghz_blocks.json \
+    --times-fig ghz_relative_runtime.png \
+    --relative-fig ghz_slowdown.png
+```
+
+Key flags:
+
+- `--n/--num-qubits` (**required**) lists the system sizes to sweep.
+- `--num-blocks`, `--tail-depth`, `--angle-scale`, `--sparsity`, and
+  `--bandwidth` control the per-block diagonal tails.
+- `--seed` seeds the random angles (a deterministic progression is generated
+  when omitted).
+- Planner/baseline knobs (`--conv-factor`, `--twoq-factor`, `--max-ram-gb`,
+  `--sv-ampops-per-sec`) feed straight into the QuASAr planner and baseline
+  simulators.
+- `--out-dir`, `--json-name`, `--times-fig`, and `--relative-fig` customise the
+  artefact layout.
+
+The generated JSON contains the planner/execution payload for every variant and
+records the baseline simulator timings. The `*_relative_runtime.png` figure
+compares the absolute runtimes normalised to the QuASAr baseline, while
+`*_slowdown.png` plots the ratio between the ablated variants and the full
+workflow.
+
 ## SSD visualisation CLI
 
 `scripts/visualize_ssd.py` offers a lightweight way to render the spatial
