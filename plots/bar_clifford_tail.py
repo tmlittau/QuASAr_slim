@@ -13,7 +13,11 @@ from .palette import EDGE_COLOR, FALLBACK_COLOR, PASTEL_COLORS
 
 COLORS = PASTEL_COLORS
 
-KINDS = {"clifford_plus_rot", "clifford_prefix_rot_tail"}
+KINDS = {
+    "clifford_plus_rot",
+    "clifford_prefix_rot_tail",
+    "sparse_clifford_prefix_sparse_tail",
+}
 
 def _load_cases(suite_dir: str) -> List[Dict[str, Any]]:
     cases = []

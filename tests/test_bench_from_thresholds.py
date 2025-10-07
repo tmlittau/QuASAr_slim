@@ -42,7 +42,9 @@ def test_run_from_thresholds_invokes_baselines(tmp_path: Path, tmp_thresholds: d
     execute_payload = {"meta": {"wall_elapsed_s": 1.23}, "results": []}
     fake_analyze = _make_fake_analyze()
     fake_ssd = mock.Mock()
-    fake_ssd.partitions = []
+    fake_tail = mock.Mock()
+    fake_tail.backend = "sv"
+    fake_ssd.partitions = [fake_tail]
     fake_ssd.to_dict.return_value = {"partitions": []}
 
     with mock.patch.object(bft, "clifford_prefix_rot_tail", return_value=mock.Mock()) as mock_builder, \
@@ -60,6 +62,7 @@ def test_run_from_thresholds_invokes_baselines(tmp_path: Path, tmp_thresholds: d
             max_ram_gb=1.0,
             sv_ampops_per_sec=None,
             baseline_timeout_s=None,
+            use_sparse_tail=False,
             log=logging.getLogger("test"),
         )
 
@@ -100,7 +103,38 @@ def test_run_from_thresholds_selects_dd_baseline(tmp_path: Path, tmp_thresholds:
             max_ram_gb=1.0,
             sv_ampops_per_sec=None,
             baseline_timeout_s=None,
+            use_sparse_tail=False,
             log=logging.getLogger("test"),
         )
 
     assert mock_baseline.call_args.kwargs["which"] == ["dd"]
+
+
+def test_run_from_thresholds_uses_sparse_builder(tmp_path: Path, tmp_thresholds: dict) -> None:
+    execute_payload = {"meta": {"wall_elapsed_s": 1.23}, "results": []}
+    fake_analyze = _make_fake_analyze()
+    fake_ssd = mock.Mock()
+    fake_ssd.partitions = []
+    fake_ssd.to_dict.return_value = {"partitions": []}
+
+    with mock.patch.object(bft, "clifford_prefix_rot_tail", return_value=mock.Mock()) as mock_default_builder, \
+         mock.patch.object(bft, "sparse_clifford_prefix_sparse_tail", return_value=mock.Mock()) as mock_sparse_builder, \
+         mock.patch.object(bft, "analyze", return_value=fake_analyze), \
+         mock.patch.object(bft, "plan", return_value=fake_ssd), \
+         mock.patch.object(bft, "execute_ssd", return_value=execute_payload), \
+         mock.patch.object(bft, "run_baselines", return_value={"entries": []}):
+        bft.run_from_thresholds(
+            tmp_thresholds,
+            cutoff=0.5,
+            out_dir=str(tmp_path),
+            angle_scale=0.1,
+            conv_factor=1.0,
+            twoq_factor=2.0,
+            max_ram_gb=1.0,
+            sv_ampops_per_sec=None,
+            baseline_timeout_s=None,
+            use_sparse_tail=True,
+            log=logging.getLogger("test"),
+        )
+    mock_sparse_builder.assert_called_once()
+    mock_default_builder.assert_not_called()
