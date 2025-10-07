@@ -37,11 +37,13 @@ def test_hybrid_prefix_metrics():
     assert prefix.metrics["is_clifford"] is True
     assert prefix.metrics["rotation_count"] == 0
     assert prefix.metrics["clifford_gates"] == 3
+    assert 0.0 <= prefix.metrics["sparsity"] <= 1.0
 
     assert tail.metrics["num_gates"] == 3
     assert tail.metrics["rotation_count"] == 2
     assert tail.metrics["is_clifford"] is False
     assert tail.metrics["clifford_gates"] == 1
+    assert 0.0 <= tail.metrics["sparsity"] <= 1.0
 
 
 def test_hybrid_partition_qubits_are_local():
@@ -73,7 +75,7 @@ def test_hybrid_partition_qubits_are_local():
 
         # Ensure all qubits in the circuit come from its own registers (no foreign qubits)
         assert len(circuit.qregs) == 1
-        assert tuple(circuit.qregs[0]) == circuit.qubits
+        assert tuple(circuit.qregs[0]) == tuple(circuit.qubits)
 
         # Ensure the mapping points to the circuit's qubit tuple
         for _, local_idx in mapping.items():

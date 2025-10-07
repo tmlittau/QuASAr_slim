@@ -3,14 +3,12 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from .SSD import SSD, PartitionNode
+from .gate_metrics import circuit_metrics
 
 try:
     from qiskit import QuantumCircuit
 except Exception:
     QuantumCircuit = Any  # type: ignore
-
-CLIFFORD = {"i","x","y","z","h","s","sdg","cx","cz","swap"}
-ROTATION_GATES = {"rx","ry","rz","rxx","ryy","rzz","crx","cry","crz","rzx"}
 
 @dataclass
 class AnalysisResult:
@@ -63,52 +61,14 @@ def _extract_subcircuit(circ: QuantumCircuit, qubit_subset: List[int]) -> Quantu
     sub.metadata = {"global_qubits": subset_sorted, "mapping": mapping}
     return sub
 
-def _gate_name(inst) -> str:
-    try:
-        return inst.name.lower()
-    except Exception:
-        return str(inst).lower()
-
-def _is_clifford_inst(inst_name: str) -> bool:
-    return inst_name in CLIFFORD
-
-def _metrics_for(circ: QuantumCircuit) -> Dict[str, Any]:
-    total = 0
-    cliff = 0
-    twoq = 0
-    t_count = 0
-    rotations = 0
-    for inst, qargs, _ in circ.data:
-        name = _gate_name(inst)
-        total += 1
-        if name in {"t","tdg"}:
-            t_count += 1
-        if len(qargs) >= 2:
-            twoq += 1
-        if name in ROTATION_GATES:
-            rotations += 1
-        if _is_clifford_inst(name):
-            cliff += 1
-    is_clifford = (total > 0 and cliff == total and t_count == 0 and rotations == 0)
-    return {
-        "num_qubits": circ.num_qubits,
-        "num_gates": total,
-        "clifford_gates": cliff,
-        "two_qubit_gates": twoq,
-        "t_count": t_count,
-        "rotation_count": rotations,
-        "is_clifford": is_clifford,
-        "depth": circ.depth(),
-    }
-
 def analyze(circuit: QuantumCircuit) -> AnalysisResult:
     comps = _union_find_components(circuit)
     ssd = SSD(meta={"total_qubits": circuit.num_qubits, "components": len(comps)})
     for pid, qubits in enumerate(comps):
         sub = _extract_subcircuit(circuit, qubits)
-        metrics = _metrics_for(sub)
+        metrics = circuit_metrics(sub)
         node = PartitionNode(id=pid, qubits=qubits, circuit=sub, metrics=metrics)
         ssd.add(node)
 
-    global_metrics = _metrics_for(circuit)
+    global_metrics = circuit_metrics(circuit)
     return AnalysisResult(ssd=ssd, metrics_global=global_metrics)

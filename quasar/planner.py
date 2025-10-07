@@ -7,6 +7,7 @@ from .backends.sv import estimate_sv_bytes
 from .backends.dd import ddsim_available
 from .backends.tableau import stim_available
 from .cost_estimator import CostEstimator
+from .gate_metrics import circuit_metrics, gate_name, CLIFFORD_GATES
 
 @dataclass
 class PlannerConfig:
@@ -34,50 +35,11 @@ def _choose_backend(metrics: Dict[str, Any], cfg: PlannerConfig) -> Tuple[str, s
         return "tableau", "sv_exceeds_ram & ddsim_unavailable & stim_available"
     return "sv", "fallback: only sv available"
 
-CLIFFORD = {"i","x","y","z","h","s","sdg","cx","cz","swap"}
-ROTATION_GATES = {"rx","ry","rz","rxx","ryy","rzz","crx","cry","crz","rzx"}
-
-def _gate_name(inst) -> str:
-    try:
-        return inst.name.lower()
-    except Exception:
-        return str(inst).lower()
-
-
-def _metrics_for_circuit(circ) -> Dict[str, Any]:
-    total = 0
-    cliff = 0
-    twoq = 0
-    t_count = 0
-    rotations = 0
-    for inst, qargs, _ in circ.data:
-        name = _gate_name(inst)
-        total += 1
-        if name in {"t", "tdg"}:
-            t_count += 1
-        if len(qargs) >= 2:
-            twoq += 1
-        if name in ROTATION_GATES:
-            rotations += 1
-        if name in CLIFFORD:
-            cliff += 1
-    is_clifford = (total > 0 and cliff == total and t_count == 0 and rotations == 0)
-    return {
-        "num_qubits": circ.num_qubits,
-        "num_gates": total,
-        "clifford_gates": cliff,
-        "two_qubit_gates": twoq,
-        "t_count": t_count,
-        "rotation_count": rotations,
-        "is_clifford": is_clifford,
-        "depth": circ.depth(),
-    }
-
 def _split_at_first_nonclifford(node: PartitionNode):
     data = node.circuit.data
     split = None
     for idx, (inst, qargs, cargs) in enumerate(data):
-        if _gate_name(inst) not in CLIFFORD:
+        if gate_name(inst) not in CLIFFORD_GATES:
             split = idx
             break
     if split is None or split == 0:
@@ -120,8 +82,8 @@ def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
     if cmp["hybrid_better"]:
         pre = _build_subcircuit_like(node.circuit, pre_ops)
         tail = _build_subcircuit_like(node.circuit, tail_ops)
-        pre_metrics = _metrics_for_circuit(pre)
-        tail_metrics = _metrics_for_circuit(tail)
+        pre_metrics = circuit_metrics(pre)
+        tail_metrics = circuit_metrics(tail)
         pre_node = PartitionNode(id=int(f"{node.id}0"), qubits=list(node.qubits), circuit=pre,
                                  metrics=pre_metrics, meta=dict(node.meta))
         tail_node = PartitionNode(id=int(f"{node.id}1"), qubits=list(node.qubits), circuit=tail,
