@@ -206,7 +206,11 @@ for the output image path.
 referenced in the paper. It sweeps a list of qubit counts, constructs the
 matching block-disjoint hybrid circuits, and benchmarks three QuASAr variants.
 Each generated circuit intentionally combines all optimisation opportunities
-used by QuASAr:
+used by QuASAr. You can select the circuit family via `--circuit`; the default
+continues to be `disjoint_preps_plus_tails` from `benchmarks.disjoint`, while
+any key registered in `benchmarks.hybrid.CIRCUIT_REGISTRY` (e.g.
+`stitched_disjoint_clifford_rot_bridge`) can be requested to stress alternating
+Clifford/rotation blocks with bridge layers forcing method conversions.
 
 - multiple disjoint qubit subsets prepared independently,
 - a Clifford-only prefix that transitions into non-Clifford (diagonal) tails,
@@ -233,6 +237,8 @@ Typical invocation:
 python -m scripts.run_ablation_study \
     --n 16 24 32 \
     --num-blocks 2 \
+    --circuit stitched_disjoint_clifford_rot_bridge \
+    --depth-clifford 512 --depth-rot 128 --bridge-layers 4 \
     --out-dir ablation_runs \
     --json-name hybrid_disjoint_results.json \
     --times-fig hybrid_relative_runtime.png \
@@ -242,8 +248,13 @@ python -m scripts.run_ablation_study \
 Key flags:
 
 - `--n/--num-qubits` (**required**) lists the system sizes to sweep.
+- `--circuit` picks the builder to use. Any key from
+  `benchmarks.hybrid.CIRCUIT_REGISTRY` or the default disjoint generator is
+  accepted.
+- `--depth-clifford`, `--depth-rot`, and `--bridge-layers` parameterise the
+  stitched hybrid generator (ignored by generators that do not use them).
 - `--num-blocks`, `--tail-depth`, `--angle-scale`, `--sparsity`, and
-  `--bandwidth` control the per-block diagonal tails.
+  `--bandwidth` control the per-block diagonal tails of the disjoint generator.
 - `--seed` seeds the random angles (a deterministic progression is generated
   when omitted).
 - Planner/baseline knobs (`--conv-factor`, `--twoq-factor`, `--max-ram-gb`,
