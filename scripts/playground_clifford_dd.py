@@ -3,13 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
-from benchmarks.hybrid import clifford_prefix_rot_tail
+from benchmarks.hybrid import (
+    clifford_prefix_rot_tail,
+    sparse_clifford_prefix_sparse_tail,
+)
 from quasar.cost_estimator import CostEstimator, CostParams
 from quasar.gate_metrics import circuit_metrics, gate_name, CLIFFORD_GATES
 
@@ -57,8 +60,9 @@ def analyze_case(
     estimator: CostEstimator,
     prefix_sparsity_min: float,
     tail_sparsity_min: float,
+    circuit_builder: Callable[..., Any] = sparse_clifford_prefix_sparse_tail,
 ) -> Dict[str, Any]:
-    qc = clifford_prefix_rot_tail(
+    qc = circuit_builder(
         num_qubits=n, depth=depth, cutoff=cutoff, angle_scale=angle_scale, seed=42
     )
     split_idx = _split_at_first_nonclifford(qc)
@@ -159,6 +163,14 @@ def main() -> None:
         default=None,
         help="If set, store the sweep data as JSON for later analysis.",
     )
+    ap.add_argument(
+        "--dense-tail",
+        action="store_true",
+        help=(
+            "Use the legacy dense rotation tail generator instead of the sparse "
+            "DD-oriented circuit builder."
+        ),
+    )
     args = ap.parse_args()
 
     if args.min_depth < 1 or args.max_depth < args.min_depth:
@@ -178,6 +190,15 @@ def main() -> None:
     print(
         "n,cutoff,depth,feasible,speedup,dd_total_norm,hybrid_norm," "prefix_sparsity,tail_sparsity"
     )
+    circuit_builder: Callable[..., Any]
+    circuit_kind: str
+    if args.dense_tail:
+        circuit_builder = clifford_prefix_rot_tail
+        circuit_kind = "clifford_prefix_rot_tail"
+    else:
+        circuit_builder = sparse_clifford_prefix_sparse_tail
+        circuit_kind = "sparse_clifford_prefix_sparse_tail"
+
     for cutoff in args.cutoff:
         for n in args.n:
             series_speedups: List[float] = []
@@ -198,6 +219,7 @@ def main() -> None:
                     estimator=estimator,
                     prefix_sparsity_min=args.prefix_sparsity_min,
                     tail_sparsity_min=args.tail_sparsity_min,
+                    circuit_builder=circuit_builder,
                 )
                 feasible = res.get("feasible", False)
                 speedup = res.get("speedup_vs_dd", float("nan"))
@@ -259,6 +281,7 @@ def main() -> None:
                     "prefix_sparsity_min": args.prefix_sparsity_min,
                     "tail_sparsity_min": args.tail_sparsity_min,
                     "target_speedup": args.target_speedup,
+                    "circuit_kind": circuit_kind,
                 },
             },
             "records": records,
