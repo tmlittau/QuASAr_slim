@@ -311,13 +311,7 @@ def main() -> None:
         plt.savefig(args.out, dpi=200, bbox_inches="tight")
         print(f"Wrote figure: {args.out}")
     else:
-        if _is_interactive_backend():
-            plt.show()
-        else:
-            timestamp = int(time.time())
-            fallback = f"dd_hybrid_speedup_{timestamp}.png"
-            plt.savefig(fallback, dpi=200, bbox_inches="tight")
-            print(f"Saved figure to {fallback}")
+        plt.show()
 
 
 if __name__ == "__main__":

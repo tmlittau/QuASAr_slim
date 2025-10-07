@@ -5,12 +5,9 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-try:  # pragma: no cover - optional dependency
-    from mqt.core import QuantumComputation
-    import mqt.ddsim as ddsim
-except Exception:  # pragma: no cover - environment without DDSIM
-    QuantumComputation = None  # type: ignore
-    ddsim = None  # type: ignore
+from mqt.core import QuantumComputation
+import mqt.ddsim as ddsim
+
 
 from ._partition import Operation, extract_operations
 

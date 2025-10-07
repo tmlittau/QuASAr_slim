@@ -4,6 +4,7 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
+import stim
 
 from ._partition import extract_operations
 
@@ -11,12 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def stim_available() -> bool:
-    try:
-        import stim  # type: ignore
-
-        return True
-    except Exception:
-        return False
+    return True
 
 
 _STIM_GATES: Dict[str, str] = {

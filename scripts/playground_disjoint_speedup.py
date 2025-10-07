@@ -375,12 +375,7 @@ def main() -> None:
         fig.savefig(args.out, dpi=200, bbox_inches="tight")
         print(f"Wrote figure: {args.out}")
     else:
-        if _is_interactive_backend():
-            plt.show()
-        else:
-            auto_path = "disjoint_speedup.png"
-            fig.savefig(auto_path, dpi=200, bbox_inches="tight")
-            print(f"Backend is non-interactive; wrote figure to {auto_path}")
+        plt.show()
 
 
 if __name__ == "__main__":
