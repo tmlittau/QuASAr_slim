@@ -204,7 +204,17 @@ for the output image path.
 
 `scripts/run_ablation_study.py` automates the hybrid/disjoint ablation runs
 referenced in the paper. It sweeps a list of qubit counts, constructs the
-matching block-disjoint hybrid circuits, and benchmarks three QuASAr variants:
+matching block-disjoint hybrid circuits, and benchmarks three QuASAr variants.
+Each generated circuit intentionally combines all optimisation opportunities
+used by QuASAr:
+
+- multiple disjoint qubit subsets prepared independently,
+- a Clifford-only prefix that transitions into non-Clifford (diagonal) tails,
+  and
+- sparse diagonal tails that encourage decision diagram execution when
+  available.
+
+The benchmarked variants are:
 
 - **Full QuASAr** — disjoint partitioning and hybrid tail splitting enabled
   (baseline).
@@ -222,11 +232,11 @@ Typical invocation:
 ```bash
 python -m scripts.run_ablation_study \
     --n 16 24 32 \
-    --num-blocks 4 \
+    --num-blocks 2 \
     --out-dir ablation_runs \
-    --json-name ghz_blocks.json \
-    --times-fig ghz_relative_runtime.png \
-    --relative-fig ghz_slowdown.png
+    --json-name hybrid_disjoint_results.json \
+    --times-fig hybrid_relative_runtime.png \
+    --relative-fig hybrid_slowdown.png
 ```
 
 Key flags:

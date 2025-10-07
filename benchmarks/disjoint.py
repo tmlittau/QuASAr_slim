@@ -63,6 +63,39 @@ def _clifford_tail_layer(
             qc.cx(b, a)
 
 
+def _sparse_cz_layer(
+    qc: QuantumCircuit,
+    block: list[int],
+    rng: np.random.Generator,
+    *,
+    bandwidth: int,
+    density: float = 0.25,
+) -> None:
+    """Apply a sparse layer of CZ gates inside ``block``.
+
+    The helper keeps the Clifford portion of the hybrid tail sparse by only
+    activating a fraction of the available edges.  ``density`` controls the
+    expected fraction of candidate edges that are used.
+    """
+
+    size = len(block)
+    if size == 0 or bandwidth <= 0 or density <= 0.0:
+        return
+    edges: list[tuple[int, int]] = []
+    for index, control in enumerate(block):
+        for offset in range(1, bandwidth + 1):
+            partner_index = index + offset
+            if partner_index < size:
+                edges.append((control, block[partner_index]))
+    if not edges:
+        return
+    num_edges = max(1, int(len(edges) * min(1.0, density)))
+    chosen = rng.choice(len(edges), size=num_edges, replace=False)
+    for edge_index in np.atleast_1d(chosen):
+        a, b = edges[int(edge_index)]
+        qc.cz(a, b)
+
+
 def _diag_tail_layer(
     qc: QuantumCircuit,
     block: list[int],
@@ -129,7 +162,7 @@ def disjoint_preps_plus_tails(
         raise ValueError(f"Unsupported block_prep '{block_prep}'")
 
     tail_kind = tail_kind.lower()
-    if tail_kind not in {"clifford", "diag", "none", "mixed"}:
+    if tail_kind not in {"clifford", "diag", "hybrid", "none", "mixed"}:
         raise ValueError(f"Unsupported tail_kind '{tail_kind}'")
 
     rng = np.random.default_rng(seed)
@@ -169,6 +202,26 @@ def disjoint_preps_plus_tails(
 
         tail = tail_choices[index]
         if tail == "none" or tail_depth <= 0:
+            continue
+        if tail == "hybrid":
+            cliff_depth = max(1, tail_depth // 3)
+            for _ in range(cliff_depth):
+                _sparse_cz_layer(
+                    qc,
+                    block,
+                    rng,
+                    bandwidth=bandwidth,
+                    density=min(0.5, sparsity + 0.1),
+                )
+            for _ in range(tail_depth):
+                _diag_tail_layer(
+                    qc,
+                    block,
+                    rng,
+                    angle_scale=angle_scale,
+                    sparsity=sparsity,
+                    bandwidth=bandwidth,
+                )
             continue
         for _ in range(tail_depth):
             if tail == "clifford":

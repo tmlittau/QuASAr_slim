@@ -29,6 +29,7 @@ import argparse
 import json
 import math
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
@@ -42,7 +43,9 @@ from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
 from quasar.SSD import SSD, PartitionNode
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
+from quasar.backends.dd import ddsim_available
 from quasar.backends.sv import estimate_sv_bytes
+from quasar.backends.tableau import stim_available
 from quasar.cost_estimator import CostEstimator
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
@@ -240,6 +243,45 @@ def _estimate_amp_ops(ssd: SSD, cfg: PlannerConfig) -> float:
         else:
             total += est.sv_cost(n, oneq, twoq)
     return float(total)
+
+
+def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
+    partitions = plan.get("partitions") if isinstance(plan, MutableMapping) else None
+    if not isinstance(partitions, Iterable):
+        raise RuntimeError("plan does not contain a partitions list")
+
+    backend_counts: Counter[str] = Counter()
+    has_hybrid_chain = False
+    max_qubits = 0
+    for entry in partitions:
+        if not isinstance(entry, MutableMapping):
+            continue
+        backend = entry.get("backend")
+        if isinstance(backend, str):
+            backend_counts[backend.lower()] += 1
+        meta = entry.get("meta")
+        if isinstance(meta, MutableMapping) and meta.get("chain_id"):
+            has_hybrid_chain = True
+        nq = entry.get("num_qubits")
+        if isinstance(nq, (int, float)):
+            max_qubits = max(max_qubits, int(nq))
+
+    missing: List[str] = []
+    if backend_counts.get("sv", 0) == 0:
+        missing.append("sv")
+    if stim_available() and backend_counts.get("tableau", 0) == 0:
+        missing.append("tableau")
+    if ddsim_available() and backend_counts.get("dd", 0) == 0:
+        missing.append("dd")
+    if missing:
+        raise RuntimeError(
+            "Expected the ablation circuit to exercise the following backends "
+            f"but they were absent from the full plan: {', '.join(sorted(set(missing)))} "
+            f"(largest partition has {max_qubits} qubits; consider reducing --num-blocks or"
+            " increasing --n)"
+        )
+    if not has_hybrid_chain:
+        raise RuntimeError("Expected at least one hybrid chain in the full plan")
 
 
 def _run_variant(
@@ -487,7 +529,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--n", "--num-qubits", nargs="+", type=int, dest="num_qubits", required=True)
-    parser.add_argument("--num-blocks", type=int, default=4, help="Number of disjoint blocks per circuit")
+    parser.add_argument(
+        "--num-blocks",
+        type=int,
+        default=2,
+        help="Number of disjoint blocks per circuit (use smaller values to keep each block large enough for hybrid/DD splits)",
+    )
     parser.add_argument("--tail-depth", type=int, default=24, help="Depth of diagonal tails inside each block")
     parser.add_argument("--angle-scale", type=float, default=0.1, help="Rotation angle scale for diagonal tails")
     parser.add_argument("--sparsity", type=float, default=0.10, help="RZ sparsity inside diagonal tails")
@@ -498,7 +545,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-ram-gb", type=float, default=64.0, help="RAM budget for planning/execution")
     parser.add_argument("--sv-ampops-per-sec", type=float, default=None, help="Override SV baseline speed (optional)")
     parser.add_argument("--out-dir", type=str, default="ablation_runs", help="Directory to store outputs")
-    parser.add_argument("--json-name", type=str, default="ablation_results.json", help="Name of the JSON summary file")
+    parser.add_argument(
+        "--json-name",
+        type=str,
+        default="hybrid_disjoint_results.json",
+        help="Name of the JSON summary file",
+    )
     parser.add_argument(
         "--times-fig",
         type=str,
@@ -546,7 +598,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             num_qubits=params["num_qubits"],
             num_blocks=params["num_blocks"],
             block_prep="ghz",
-            tail_kind="diag",
+            tail_kind="hybrid",
             tail_depth=params["tail_depth"],
             angle_scale=params["angle_scale"],
             sparsity=params["sparsity"],
@@ -565,6 +617,13 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         cfg_full = PlannerConfig(**planner_base)
         variants["full"] = _run_variant("full", analysis.ssd, cfg_full, exec_cfg)
+        if variants["full"].plan is not None:
+            try:
+                _validate_plan_features(variants["full"].plan)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Circuit sanity check failed for params {params}: {exc}"
+                ) from exc
 
         merged_ssd = _collapse_to_single_partition(
             circ,
