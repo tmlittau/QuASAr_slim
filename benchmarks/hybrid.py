@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict
 
 import numpy as np
@@ -12,6 +13,7 @@ __all__ = [
     "random_clifford",
     "stitched_disjoint_rand_bandedqft_rand",
     "stitched_disjoint_diag_bandedqft_diag",
+    "stitched_disjoint_clifford_rotations_bridge",
     "clifford_plus_random_rotations",
     "clifford_prefix_rot_tail",
     "sparse_clifford_prefix_sparse_tail",
@@ -381,11 +383,90 @@ def sparse_clifford_prefix_sparse_tail(
     return qc
 
 
+def stitched_disjoint_clifford_rotations_bridge(
+    *,
+    num_qubits: int,
+    num_blocks: int = 2,
+    depth_clifford: int = 512,
+    depth_rot: int = 128,
+    bridge_layers: int = 4,
+    angle_scale: float = 0.2,
+    seed: int = 42,
+) -> QuantumCircuit:
+    """Alternating GHZ-initialised Clifford and rotation blocks with bridges."""
+
+    rng = np.random.default_rng(seed)
+    qc = QuantumCircuit(num_qubits)
+
+    base = num_qubits // num_blocks
+    rem = num_qubits % num_blocks
+    blocks = []
+    start = 0
+    for i in range(num_blocks):
+        size = base + (1 if i < rem else 0)
+        blk = list(range(start, start + size))
+        blocks.append(blk)
+        start += size
+
+    for blk in blocks:
+        if not blk:
+            continue
+        qc.h(blk[0])
+        for t in blk[1:]:
+            qc.cx(blk[0], t)
+
+    cliff1 = ("h", "s", "sdg", "x", "z")
+    cliff2 = ("cx", "cz", "swap")
+
+    for bi, blk in enumerate(blocks):
+        if not blk:
+            continue
+        if bi % 2 == 0:
+            for _ in range(depth_clifford):
+                for q in blk:
+                    getattr(qc, rng.choice(cliff1))(q)
+                shuffled = blk.copy()
+                rng.shuffle(shuffled)
+                for a, b in zip(shuffled[::2], shuffled[1::2]):
+                    getattr(qc, rng.choice(cliff2))(a, b)
+        else:
+            for _ in range(depth_rot):
+                for q in blk:
+                    qc.rx(float(rng.uniform(-angle_scale, angle_scale)), q)
+                    qc.ry(float(rng.uniform(-angle_scale, angle_scale)), q)
+                    qc.rz(float(rng.uniform(-angle_scale, angle_scale)), q)
+                shuffled = blk.copy()
+                rng.shuffle(shuffled)
+                for a, b in zip(shuffled[::2], shuffled[1::2]):
+                    if rng.random() < 0.5:
+                        qc.cz(a, b)
+                    else:
+                        phi = float(rng.uniform(-angle_scale, angle_scale))
+                        qc.cp(phi, a, b)
+        qc.barrier(*blk)
+
+    for _ in range(bridge_layers):
+        for i in range(len(blocks) - 1):
+            left, right = blocks[i], blocks[i + 1]
+            if not left or not right:
+                continue
+            a, b = left[-1], right[0]
+            if rng.random() < 0.5:
+                qc.cz(a, b)
+            else:
+                phi = float(rng.uniform(-angle_scale, angle_scale))
+                qc.cp(phi, a, b)
+        qc.barrier()
+
+    return qc
+
+
 CIRCUIT_REGISTRY: Dict[str, Any] = {
     "ghz_clusters_random": ghz_clusters_random,
     "random_clifford": random_clifford,
     "stitched_rand_bandedqft_rand": stitched_disjoint_rand_bandedqft_rand,
     "stitched_diag_bandedqft_diag": stitched_disjoint_diag_bandedqft_diag,
+    "stitched_disjoint_clifford_rot_bridge": stitched_disjoint_clifford_rotations_bridge,
     "clifford_plus_rot": clifford_plus_random_rotations,
     "clifford_prefix_rot_tail": clifford_prefix_rot_tail,
     "sparse_clifford_prefix_sparse_tail": sparse_clifford_prefix_sparse_tail,
@@ -397,4 +478,10 @@ def build(kind: str, /, **kwargs: Any) -> QuantumCircuit:
         builder = CIRCUIT_REGISTRY[kind]
     except KeyError as exc:
         raise ValueError(f"Unknown hybrid circuit kind: {kind}") from exc
-    return builder(**kwargs)
+    sig = inspect.signature(builder)
+    accepted = {
+        key: value
+        for key, value in kwargs.items()
+        if key in sig.parameters
+    }
+    return builder(**accepted)
