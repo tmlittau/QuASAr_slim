@@ -41,6 +41,8 @@ from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
 from quasar.SSD import SSD, PartitionNode
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
+from quasar.backends.sv import estimate_sv_bytes
+from quasar.cost_estimator import CostEstimator
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
@@ -57,16 +59,21 @@ class VariantResult:
     name: str
     ok: bool
     wall_s: Optional[float]
+    wall_estimate_s: Optional[float]
     planner_config: Dict[str, Any]
     plan: Optional[Dict[str, Any]] = None
     execution: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    amp_ops: Optional[float] = None
+    peak_mem_bytes: Optional[int] = None
+    peak_mem_estimate_bytes: Optional[int] = None
 
     def to_json(self) -> Dict[str, Any]:
         payload = {
             "name": self.name,
             "ok": self.ok,
             "wall_elapsed_s": self.wall_s,
+            "wall_estimated_s": self.wall_estimate_s,
             "planner_config": self.planner_config,
         }
         if self.plan is not None:
@@ -75,6 +82,12 @@ class VariantResult:
             payload["execution"] = self.execution
         if self.error is not None:
             payload["error"] = self.error
+        if self.amp_ops is not None:
+            payload["amp_ops"] = self.amp_ops
+        if self.peak_mem_bytes is not None:
+            payload["peak_mem_bytes"] = self.peak_mem_bytes
+        if self.peak_mem_estimate_bytes is not None:
+            payload["peak_mem_estimated_bytes"] = self.peak_mem_estimate_bytes
         return payload
 
 
@@ -128,6 +141,92 @@ def _extract_wall_elapsed(exec_payload: Any) -> Optional[float]:
     return None
 
 
+def _execution_status(exec_payload: Any) -> Tuple[bool, Optional[str]]:
+    if not isinstance(exec_payload, MutableMapping):
+        return False, "no_execution_payload"
+    results = exec_payload.get("results")
+    if not isinstance(results, Iterable):
+        return False, "no_results"
+    ok_all = True
+    errors: List[str] = []
+    for entry in results:
+        if not isinstance(entry, MutableMapping):
+            continue
+        status = entry.get("status")
+        if status not in (None, "ok"):
+            ok_all = False
+            err = entry.get("error")
+            if isinstance(err, str) and err:
+                errors.append(f"p{entry.get('partition')}: {err}")
+    if ok_all:
+        return True, None
+    if errors:
+        return False, "; ".join(errors)
+    return False, "execution_failed"
+
+
+def _extract_peak_memory(exec_payload: Any) -> Tuple[Optional[int], Optional[int]]:
+    if not isinstance(exec_payload, MutableMapping):
+        return None, None
+    results = exec_payload.get("results")
+    if not isinstance(results, Iterable):
+        return None, None
+    measured: List[int] = []
+    estimated: List[int] = []
+    for entry in results:
+        if not isinstance(entry, MutableMapping):
+            continue
+        mem = entry.get("mem_bytes")
+        mem_est = entry.get("mem_bytes_estimated")
+        status = entry.get("status")
+        if isinstance(mem, (int, float)):
+            if status in (None, "ok"):
+                measured.append(int(mem))
+            else:
+                estimated.append(int(mem))
+        if isinstance(mem_est, (int, float)):
+            estimated.append(int(mem_est))
+    meas_peak = max(measured) if measured else None
+    est_peak = max(estimated) if estimated else None
+    return meas_peak, est_peak
+
+
+def _estimate_mem_for_backend(backend: str, n_qubits: int) -> int:
+    b = (backend or "sv").lower()
+    if b == "tableau":
+        return 64 * 1024 * 1024
+    if b == "dd":
+        return 256 * 1024 * 1024
+    return int(estimate_sv_bytes(n_qubits))
+
+
+def _estimate_peak_mem_from_plan(ssd: SSD) -> Optional[int]:
+    peak = 0
+    for node in ssd.partitions:
+        metrics = node.metrics or {}
+        n = int(metrics.get("num_qubits", 0))
+        need = _estimate_mem_for_backend(node.backend or "sv", n)
+        peak = max(peak, need)
+    return peak or None
+
+
+def _estimate_amp_ops(ssd: SSD, cfg: PlannerConfig) -> float:
+    est = CostEstimator.from_planner_config(cfg)
+    total = 0.0
+    for node in ssd.partitions:
+        metrics = node.metrics or {}
+        n = int(metrics.get("num_qubits", 0))
+        total_gates = int(metrics.get("num_gates", 0))
+        twoq = int(metrics.get("two_qubit_gates", 0))
+        oneq = max(0, total_gates - twoq)
+        backend = (node.backend or "sv").lower()
+        if backend == "tableau":
+            total += est.tableau_prefix_cost(n, oneq, twoq)
+        else:
+            total += est.sv_cost(n, oneq, twoq)
+    return float(total)
+
+
 def _run_variant(
     name: str,
     ssd: SSD,
@@ -141,9 +240,13 @@ def _run_variant(
             name=name,
             ok=False,
             wall_s=None,
+            wall_estimate_s=None,
             planner_config=asdict(planner_cfg),
             error=f"plan_failed: {exc}",
         )
+
+    amp_ops = _estimate_amp_ops(planned, planner_cfg)
+    peak_mem_plan = _estimate_peak_mem_from_plan(planned)
 
     try:
         exec_payload = execute_ssd(planned, exec_cfg)
@@ -153,18 +256,32 @@ def _run_variant(
             name=name,
             ok=False,
             wall_s=None,
+            wall_estimate_s=None,
             planner_config=asdict(planner_cfg),
             plan=planned.to_dict(),
             error=f"execute_failed: {exc}",
+            amp_ops=amp_ops,
+            peak_mem_bytes=None,
+            peak_mem_estimate_bytes=peak_mem_plan,
         )
+
+    ok_exec, exec_error = _execution_status(exec_payload)
+    peak_measured, peak_estimated = _extract_peak_memory(exec_payload)
+    if peak_estimated is None:
+        peak_estimated = peak_mem_plan
 
     return VariantResult(
         name=name,
-        ok=True,
-        wall_s=wall,
+        ok=ok_exec,
+        wall_s=wall if ok_exec else None,
+        wall_estimate_s=None,
         planner_config=asdict(planner_cfg),
         plan=planned.to_dict(),
         execution=exec_payload,
+        error=(exec_error if ok_exec or exec_error else "execution_failed"),
+        amp_ops=amp_ops,
+        peak_mem_bytes=peak_measured,
+        peak_mem_estimate_bytes=peak_estimated,
     )
 
 
@@ -192,10 +309,11 @@ def _make_runtime_plot(
             data = variants.get(key, {})
             if not isinstance(data, MutableMapping):
                 return math.nan
-            if data.get("ok") is False:
-                return math.nan
             wall = data.get("wall_elapsed_s")
-            return float(wall) if isinstance(wall, (int, float)) else math.nan
+            if isinstance(wall, (int, float)):
+                return float(wall)
+            wall_est = data.get("wall_estimated_s")
+            return float(wall_est) if isinstance(wall_est, (int, float)) else math.nan
 
         t_full = _time("full")
         t_nodisjoint = _time("no_disjoint")
@@ -253,65 +371,76 @@ def _make_runtime_plot(
     plt.close()
 
 
-def _make_relative_plot(
+def _make_memory_plot(
     records: List[Dict[str, Any]],
     *,
     out_path: Path,
     title: str,
 ) -> None:
     labels = []
-    slowdown_disjoint, slowdown_hybrid = [], []
+    mem_full, mem_nodisjoint, mem_nohybrid = [], [], []
 
     for rec in records:
         params = rec.get("params", {})
         variants = rec.get("variants", {})
         labels.append(_format_label(params))
 
-        def _wall(key: str) -> Optional[float]:
+        def _mem(key: str) -> float:
             data = variants.get(key, {})
             if not isinstance(data, MutableMapping):
-                return None
-            if data.get("ok") is False:
-                return None
-            wall = data.get("wall_elapsed_s")
-            return float(wall) if isinstance(wall, (int, float)) else None
+                return math.nan
+            for candidate in ("peak_mem_bytes", "peak_mem_estimated_bytes"):
+                value = data.get(candidate)
+                if isinstance(value, (int, float)):
+                    return float(value)
+            return math.nan
 
-        full = _wall("full")
-        nd = _wall("no_disjoint")
-        nh = _wall("no_hybrid")
+        m_full = _mem("full")
+        m_nd = _mem("no_disjoint")
+        m_nh = _mem("no_hybrid")
 
-        if full is None or full == 0:
-            slowdown_disjoint.append(math.nan)
-            slowdown_hybrid.append(math.nan)
+        if math.isnan(m_full) or m_full == 0.0:
+            mem_full.append(math.nan)
+            mem_nodisjoint.append(math.nan)
+            mem_nohybrid.append(math.nan)
         else:
-            slowdown_disjoint.append(nd / full if nd is not None else math.nan)
-            slowdown_hybrid.append(nh / full if nh is not None else math.nan)
+            mem_full.append(1.0)
+            mem_nodisjoint.append(m_nd / m_full if not math.isnan(m_nd) else math.nan)
+            mem_nohybrid.append(m_nh / m_full if not math.isnan(m_nh) else math.nan)
 
     x = np.arange(len(labels))
-    width = 0.35
+    width = 0.25
 
     plt.figure(figsize=(max(8, len(labels) * 1.5), 5))
     plt.bar(
-        x - width / 2,
-        slowdown_disjoint,
+        x - width,
+        mem_full,
         width,
-        label="No disjoint / Full",
+        label="Full QuASAr",
+        color=PASTEL_COLORS.get("tableau"),
+        edgecolor=EDGE_COLOR,
+    )
+    plt.bar(
+        x,
+        mem_nodisjoint,
+        width,
+        label="No disjoint partitioning",
         color=PASTEL_COLORS.get("sv"),
         edgecolor=EDGE_COLOR,
     )
     plt.bar(
-        x + width / 2,
-        slowdown_hybrid,
+        x + width,
+        mem_nohybrid,
         width,
-        label="No hybrid / Full",
+        label="No hybrid splitting",
         color=PASTEL_COLORS.get("dd"),
         edgecolor=EDGE_COLOR,
     )
 
-    plt.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
     plt.xticks(x, labels, rotation=25, ha="right")
-    plt.ylabel("Slowdown vs full QuASAr")
+    plt.ylabel("Relative peak memory vs full QuASAr")
     plt.title(title)
+    plt.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
@@ -341,10 +470,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", type=str, default="ablation_runs", help="Directory to store outputs")
     parser.add_argument("--json-name", type=str, default="ablation_results.json", help="Name of the JSON summary file")
     parser.add_argument(
-        "--times-fig", type=str, default="ablation_relative_runtime.png", help="Filename for the relative runtime bar chart"
+        "--times-fig",
+        type=str,
+        default="ablation_relative_runtime.png",
+        help="Filename for the relative runtime bar chart",
     )
     parser.add_argument(
-        "--relative-fig", type=str, default="ablation_slowdown.png", help="Filename for the slowdown bar chart"
+        "--memory-fig",
+        "--relative-fig",
+        dest="memory_fig",
+        type=str,
+        default="ablation_relative_memory.png",
+        help="Filename for the relative peak memory bar chart",
     )
     return parser.parse_args(argv)
 
@@ -410,9 +547,42 @@ def main(argv: Optional[List[str]] = None) -> None:
         cfg_nohybrid = PlannerConfig(**planner_base, hybrid_clifford_tail=False)
         variants["no_hybrid"] = _run_variant("no_hybrid", analysis.ssd, cfg_nohybrid, exec_cfg)
 
+        amp_scale: Optional[float] = None
+        for key in ("full", "no_disjoint", "no_hybrid"):
+            cand = variants.get(key)
+            if not cand or cand.amp_ops in (None, 0.0) or cand.wall_s in (None, 0.0):
+                continue
+            scale = cand.wall_s / cand.amp_ops
+            if scale and math.isfinite(scale) and scale > 0:
+                amp_scale = scale
+                break
+        if amp_scale is None:
+            for cand in variants.values():
+                if not cand or cand.amp_ops in (None, 0.0) or cand.wall_s in (None, 0.0):
+                    continue
+                scale = cand.wall_s / cand.amp_ops
+                if scale and math.isfinite(scale) and scale > 0:
+                    amp_scale = scale
+                    break
+
+        for cand in variants.values():
+            if cand.wall_s is not None:
+                cand.wall_estimate_s = cand.wall_s
+            elif cand.amp_ops and amp_scale:
+                cand.wall_estimate_s = cand.amp_ops * amp_scale
+            else:
+                cand.wall_estimate_s = None
+
         print(
             "    -> times (s):",
-            {k: (v.wall_s if v.ok else None) for k, v in variants.items()},
+            {
+                k: (
+                    v.wall_s
+                    if v.wall_s is not None
+                    else v.wall_estimate_s
+                )
+                for k, v in variants.items()
+            },
         )
 
         try:
@@ -453,9 +623,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         _make_runtime_plot(records, out_path=times_path, title="QuASAr ablation study: relative runtime")
         print(f"Wrote runtime bar chart to {times_path}")
 
-        rel_path = out_dir / args.relative_fig
-        _make_relative_plot(records, out_path=rel_path, title="QuASAr ablation study: slowdown vs full")
-        print(f"Wrote slowdown bar chart to {rel_path}")
+        mem_path = out_dir / args.memory_fig
+        _make_memory_plot(records, out_path=mem_path, title="QuASAr ablation study: relative peak memory")
+        print(f"Wrote memory bar chart to {mem_path}")
 
 
 if __name__ == "__main__":
