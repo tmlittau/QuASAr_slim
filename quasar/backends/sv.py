@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
+try:  # pragma: no cover - fallback for stubbed qiskit in tests
+    from qiskit.exceptions import QiskitError
+except Exception:  # pragma: no cover - fallback when exceptions module missing
+    class QiskitError(Exception):
+        """Fallback error used when qiskit.exceptions is unavailable."""
 
 from ._partition import Operation, extract_operations
 
 LOGGER = logging.getLogger(__name__)
+
+
+class StatevectorSimulationError(RuntimeError):
+    """Raised when qiskit-aer cannot provide a statevector result."""
 
 
 def estimate_sv_bytes(n_qubits: int) -> int:
@@ -54,6 +63,24 @@ def _apply_operation(circuit: QuantumCircuit, op: Operation) -> None:
 
 class StatevectorBackend:
     """Simulate partitions by delegating to :mod:`qiskit-aer`."""
+
+    @staticmethod
+    def _collect_result_errors(result: Any) -> Iterable[str]:
+        status = getattr(result, "status", None)
+        if isinstance(status, str) and status and status.lower() not in {"success", "done"}:
+            yield status.strip()
+        experiments = getattr(result, "results", None)
+        if isinstance(experiments, Iterable):
+            for idx, entry in enumerate(experiments):
+                entry_status = getattr(entry, "status", None)
+                if not isinstance(entry_status, str):
+                    continue
+                clean = entry_status.strip()
+                if not clean:
+                    continue
+                lowered = clean.lower()
+                if lowered.startswith("error") or lowered.startswith("fail"):
+                    yield f"[Experiment {idx}] {clean}"
 
     def run(
         self,
@@ -102,9 +129,16 @@ class StatevectorBackend:
         except TimeoutError:
             # Propagate timeout so the caller can convert it into an estimate
             raise
-        except Exception:
-            LOGGER.exception("qiskit-aer failed while executing the partition.")
-            return None
+        except Exception as exc:
+            msg = f"qiskit-aer execution failed: {exc}"
+            LOGGER.warning("%s", msg)
+            raise StatevectorSimulationError(msg) from exc
+
+        errors = list(self._collect_result_errors(result))
+        if errors:
+            message = "; ".join(errors)
+            LOGGER.warning("Statevector simulator reported failure: %s", message)
+            raise StatevectorSimulationError(message)
 
         if progress_cb is not None:
             progress_cb(max(1, len(ops)))
@@ -116,7 +150,11 @@ class StatevectorBackend:
             state = result.get_statevector(executable)
         except TimeoutError:
             raise
-        except Exception:
-            LOGGER.exception("Unable to fetch statevector result from qiskit-aer.")
-            return None
+        except QiskitError as exc:
+            msg = f"Unable to fetch statevector: {exc}"
+            LOGGER.warning("%s", msg)
+            raise StatevectorSimulationError(msg) from exc
+        except Exception as exc:  # pragma: no cover - defensive guard
+            LOGGER.warning("Unable to fetch statevector result from qiskit-aer: %s", exc)
+            raise StatevectorSimulationError(str(exc)) from exc
         return np.asarray(state, dtype=np.complex128)

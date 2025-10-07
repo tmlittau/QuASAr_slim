@@ -5,7 +5,11 @@ import threading, time, logging
 from collections import defaultdict
 
 from .SSD import SSD, PartitionNode
-from .backends.sv import StatevectorBackend, estimate_sv_bytes
+from .backends.sv import (
+    StatevectorBackend,
+    StatevectorSimulationError,
+    estimate_sv_bytes,
+)
 from .backends.dd import DecisionDiagramBackend
 from .backends.tableau import TableauBackend
 
@@ -225,6 +229,35 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "mem_bytes": int(need),
                     }
                 init_state = out
+            except StatevectorSimulationError as exc:
+                elapsed = time.time() - start
+                with lock:
+                    pr = progress.get(pid, {})
+                    if pr and pr.get("done", 0) < total_gates:
+                        pr["done"] = int(total_gates)
+                        pr["last_ts"] = time.time()
+                    statuses[pid] = {
+                        "status": "estimated",
+                        "backend": node.backend,
+                        "elapsed_s": elapsed,
+                        "wall_s_measured": elapsed,
+                        "statevector_len": None,
+                        "error": str(exc),
+                        "chain_id": cid,
+                        "seq_index": node.meta.get("seq_index", 0),
+                        "total_gates": int(total_gates),
+                        "num_qubits": n,
+                        "want_statevector": want_sv,
+                        "mem_bytes": int(need),
+                        "mem_bytes_estimated": int(need),
+                    }
+                LOGGER.warning(
+                    "Partition %s on backend %s fell back to estimate: %s",
+                    pid,
+                    node.backend,
+                    exc,
+                )
+                init_state = None
             except Exception as e:
                 elapsed = time.time() - start
                 with lock:
