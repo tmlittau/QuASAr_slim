@@ -27,8 +27,9 @@ def _choose_backend(metrics: Dict[str, Any], cfg: PlannerConfig) -> Tuple[str, s
     cap = int(cfg.max_ram_gb * (1024**3))
     if sv_bytes <= cap:
         dd_ready = ddsim_available()
-        if cfg.prefer_dd and dd_ready and n >= 20:
-            return "dd", "prefer_dd & n>=20 & ddsim_available"
+        min_dd_qubits = 12
+        if cfg.prefer_dd and dd_ready and n >= min_dd_qubits:
+            return "dd", f"prefer_dd & n>={min_dd_qubits} & ddsim_available"
         reasons = ["fits_ram"]
         if n < 20:
             reasons.append("n<20")
@@ -77,6 +78,8 @@ def _build_subcircuit_like(parent, ops: List):
 
 def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
     if not cfg.hybrid_clifford_tail:
+        return None
+    if int(node.id) % 2 == 1:
         return None
     split = _split_at_first_nonclifford(node)
     if not split:
