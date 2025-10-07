@@ -128,12 +128,18 @@ def _estimate_bytes_for_partition(backend: str, n_qubits: int, want_sv: bool) ->
 
 def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
-    try:
-        import os
-        if cfg.max_workers <= 0:
-            cfg.max_workers = max(1, min(4, (os.cpu_count() or 2)))
-    except Exception:
-        cfg.max_workers = 2
+    cpu_count = None
+    if cfg.max_workers <= 0:
+        try:
+            import os
+
+            cpu_count = os.cpu_count()
+        except Exception:
+            cpu_count = None
+        if cpu_count is None or cpu_count <= 0:
+            cpu_count = 2
+    else:
+        cfg.max_workers = max(1, int(cfg.max_workers))
     cap_bytes = int(cfg.max_ram_gb * (1024**3))
     memgov = _MemGovernor(cap_bytes)
 
@@ -145,6 +151,12 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
 
     chains = _group_chains(ssd)
+    if cfg.max_workers <= 0:
+        desired = max(1, len(chains))
+        if cpu_count is None:
+            cfg.max_workers = desired
+        else:
+            cfg.max_workers = max(1, min(cpu_count, desired))
 
     def _make_progress_cb(pid: int) -> Callable[[int], None]:
         """Backends call this with the number of newly-processed gates (default 1)."""
