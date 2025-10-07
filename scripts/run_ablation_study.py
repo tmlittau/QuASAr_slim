@@ -39,6 +39,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 from qiskit import QuantumCircuit
 
+from benchmarks import hybrid as hybrid_bench
 from benchmarks.disjoint import disjoint_preps_plus_tails
 from benchmarks.hybrid import (
     stitched_disjoint_diag_bandedqft_diag,
@@ -259,6 +260,7 @@ def _build_ablation_circuit(
     sparsity: float,
     bandwidth: int,
     seed: int,
+    **_: Any,
 ) -> QuantumCircuit:
     """Create a deep hybrid/disjoint circuit for the ablation study."""
 
@@ -450,14 +452,30 @@ def _attempt_circuit_construction(
         if seed_index > 0:
             print(f"    -> resampling circuit with seed={seed_candidate}")
         for blocks in range(original_blocks, 0, -1):
-            circ_candidate = _build_ablation_circuit(
-                num_qubits=base_params["num_qubits"],
-                num_blocks=blocks,
-                tail_depth=base_params["tail_depth"],
-                angle_scale=base_params["angle_scale"],
-                sparsity=base_params["sparsity"],
-                bandwidth=base_params["bandwidth"],
-                seed=seed_candidate,
+            circuit_key = base_params.get("circuit", "disjoint_preps_plus_tails")
+            candidate_params = dict(base_params)
+            candidate_params.update(
+                {
+                    "num_qubits": base_params["num_qubits"],
+                    "num_blocks": blocks,
+                    "seed": seed_candidate,
+                }
+            )
+            registry = getattr(hybrid_bench, "CIRCUIT_REGISTRY", {})
+            if circuit_key in registry:
+                circ_candidate = hybrid_bench.build(circuit_key, **candidate_params)
+            else:
+                circ_candidate = _build_ablation_circuit(
+                    num_qubits=base_params["num_qubits"],
+                    num_blocks=blocks,
+                    tail_depth=base_params["tail_depth"],
+                    angle_scale=base_params["angle_scale"],
+                    sparsity=base_params["sparsity"],
+                    bandwidth=base_params["bandwidth"],
+                    seed=seed_candidate,
+                    depth_clifford=base_params.get("depth_clifford"),
+                    depth_rot=base_params.get("depth_rot"),
+                    bridge_layers=base_params.get("bridge_layers"),
                 )
             analysis_candidate = analyze(circ_candidate)
             try:
@@ -798,11 +816,35 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=2,
         help="Number of disjoint blocks per circuit (use smaller values to keep each block large enough for hybrid/DD splits)",
     )
+    parser.add_argument(
+        "--circuit",
+        type=str,
+        default="disjoint_preps_plus_tails",
+        help="Circuit builder key; supports hybrid.CIRCUIT_REGISTRY keys as well",
+    )
     parser.add_argument("--tail-depth", type=int, default=24, help="Depth of diagonal tails inside each block")
     parser.add_argument("--angle-scale", type=float, default=0.1, help="Rotation angle scale for diagonal tails")
     parser.add_argument("--sparsity", type=float, default=0.10, help="RZ sparsity inside diagonal tails")
     parser.add_argument("--bandwidth", type=int, default=2, help="CZ bandwidth inside diagonal tails")
     parser.add_argument("--seed", type=int, default=None, help="Base seed for circuit construction")
+    parser.add_argument(
+        "--depth-clifford",
+        type=int,
+        default=512,
+        help="Clifford tail depth for even-indexed blocks (hybrid stitched circuit)",
+    )
+    parser.add_argument(
+        "--depth-rot",
+        type=int,
+        default=128,
+        help="Rotation tail depth for odd-indexed blocks (hybrid stitched circuit)",
+    )
+    parser.add_argument(
+        "--bridge-layers",
+        type=int,
+        default=4,
+        help="Inter-block bridge layers (hybrid stitched circuit)",
+    )
     parser.add_argument(
         "--max-resamples",
         type=int,
@@ -867,11 +909,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         params = {
             "num_qubits": int(n),
             "num_blocks": int(args.num_blocks),
+            "circuit": str(args.circuit),
             "tail_depth": int(args.tail_depth),
             "angle_scale": float(args.angle_scale),
             "sparsity": float(args.sparsity),
             "bandwidth": int(args.bandwidth),
             "seed": seed,
+            "depth_clifford": int(args.depth_clifford),
+            "depth_rot": int(args.depth_rot),
+            "bridge_layers": int(args.bridge_layers),
         }
         print(f"[{index}/{total}] Building circuit with params: {params}")
 
