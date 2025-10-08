@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from quasar.analyzer import analyze
 from quasar.planner import PlannerConfig, plan
 import quasar.planner as planner_mod
+from scripts import plot_ablation_bars as pab
 from scripts import run_ablation_study as ras
 
 
@@ -52,3 +53,35 @@ def test_streamlined_hybrid_blocks_split(monkeypatch: pytest.MonkeyPatch) -> Non
         assert prefix.backend == "tableau"
         expected_tail = "sv" if spec.tail_kind == "random" else "dd"
         assert tail.backend == expected_tail
+
+
+def test_collect_variant_metrics_extracts_wall_and_memory() -> None:
+    summary = {
+        "variants": [
+            {
+                "name": "full",
+                "execution": {
+                    "meta": {"wall_elapsed_s": 3.2},
+                    "results": [
+                        {"mem_bytes": 512 * 1024**2},
+                        {"mem_bytes": 2 * 1024**3},
+                    ],
+                },
+            },
+            {
+                "name": "no_disjoint",
+                "execution": {
+                    "meta": {"wall_elapsed_s": 4.8},
+                    "results": [
+                        {"mem_bytes": 3 * 1024**3},
+                    ],
+                },
+            },
+        ]
+    }
+
+    metrics = pab.collect_variant_metrics(summary)
+    assert [m.name for m in metrics] == ["full", "no_disjoint"]
+    assert metrics[0].wall_time_s == pytest.approx(3.2)
+    assert metrics[0].max_mem_gb == pytest.approx(2.0)
+    assert metrics[1].max_mem_gb == pytest.approx(3.0)
