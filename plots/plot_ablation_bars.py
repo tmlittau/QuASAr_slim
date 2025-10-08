@@ -35,6 +35,8 @@ _PASTEL_PALETTE = [
 ]
 
 _DEFAULT_TITLE = "QuASAr ablation study"
+_BASELINE_VARIANT_NAME = "full"
+_BASELINE_LABEL = "baseline"
 
 @dataclass(frozen=True)
 class VariantMetrics:
@@ -140,14 +142,52 @@ def collect_variant_metrics(summary: Dict[str, object]) -> List[VariantMetrics]:
     return metrics
 
 
-def _plot_bars(ax, labels: List[str], values: List[float], *, title: str, ylabel: str) -> None:
+def _plot_bars(
+    ax,
+    labels: List[str],
+    values: List[float],
+    *,
+    title: str,
+    ylabel: str,
+    value_formatter=None,
+) -> None:
     colors = list(islice(cycle(_PASTEL_PALETTE), len(values)))
     ax.bar(labels, values, color=colors, edgecolor="white", linewidth=0.8)
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.set_ylim(bottom=0)
+    formatter = value_formatter if value_formatter is not None else (lambda value: f"{value:.2f}")
     for idx, value in enumerate(values):
-        ax.text(idx, value, f"{value:.2f}", ha="center", va="bottom")
+        ax.text(idx, value, formatter(value), ha="center", va="bottom")
+
+
+def _baseline_index(metrics: List[VariantMetrics]) -> int:
+    for idx, metric in enumerate(metrics):
+        if metric.name == _BASELINE_VARIANT_NAME:
+            return idx
+    for idx, metric in enumerate(metrics):
+        if metric.name == _BASELINE_LABEL:
+            return idx
+    return 0
+
+
+def _relative_to_baseline(values: List[float], baseline_idx: int) -> List[float]:
+    if not values:
+        return []
+    baseline_value = values[baseline_idx]
+    if baseline_value == 0:
+        return [1.0 if idx == baseline_idx else 0.0 for idx in range(len(values))]
+    return [value / baseline_value for value in values]
+
+
+def _display_labels(metrics: List[VariantMetrics]) -> List[str]:
+    labels: List[str] = []
+    for metric in metrics:
+        if metric.name == _BASELINE_VARIANT_NAME:
+            labels.append(_BASELINE_LABEL)
+        else:
+            labels.append(metric.name)
+    return labels
 
 
 def plot_metrics(
@@ -155,16 +195,35 @@ def plot_metrics(
 ) -> None:
     """Render the runtime and memory bar charts for the provided metrics."""
 
-    labels = [m.name for m in metrics]
+    labels = _display_labels(metrics)
+    baseline_idx = _baseline_index(metrics)
+
     runtimes = [m.wall_time_s for m in metrics]
-    memories, mem_unit = _memory_values(metrics)
+    runtime_rel = _relative_to_baseline(runtimes, baseline_idx)
+
+    memories_bytes = [m.max_mem_bytes for m in metrics]
+    memory_rel = _relative_to_baseline(memories_bytes, baseline_idx)
 
     fig, (ax_runtime, ax_memory) = plt.subplots(1, 2, figsize=(10, 4))
     suptitle = title if title is not None else _DEFAULT_TITLE
     fig.suptitle(suptitle)
 
-    _plot_bars(ax_runtime, labels, runtimes, title="Runtime", ylabel="Seconds")
-    _plot_bars(ax_memory, labels, memories, title="Memory", ylabel=mem_unit)
+    _plot_bars(
+        ax_runtime,
+        labels,
+        runtime_rel,
+        title="Runtime",
+        ylabel="Runtime (× baseline)",
+        value_formatter=lambda value: f"{value:.2f}x",
+    )
+    _plot_bars(
+        ax_memory,
+        labels,
+        memory_rel,
+        title="Memory",
+        ylabel="Memory (× baseline)",
+        value_formatter=lambda value: f"{value:.2f}x",
+    )
 
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
