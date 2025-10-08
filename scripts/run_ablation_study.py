@@ -1,1134 +1,339 @@
 #!/usr/bin/env python3
-"""Run an ablation study over QuASAr's partitioning strategies.
+"""Streamlined ablation study helper for QuASAr's partitioning strategies.
 
-This helper builds a family of disjoint hybrid circuits and benchmarks three
-QuASAr variants:
+The new workflow focuses on a single configurable circuit that contains several
+independent hybrid sub-circuits.  Each sub-circuit is constructed by applying a
+Clifford-only prefix followed by either a dense random-rotation tail or a sparse
+phase tail.  This mix stresses both the disjoint partitioning logic and the
+hybrid prefix/tail splitter in a single problem instance, enabling lightweight
+experiments before scaling to deeper benchmarks.
 
-* **full** – standard QuASAr with disjoint partitioning and hybrid prefix/tail
-  decomposition enabled.
-* **no_disjoint** – QuASAr with disjoint partitioning disabled (the entire
-  circuit is executed as a single partition) while hybrid decomposition remains
-  available.
-* **no_hybrid** – QuASAr with the hybrid prefix/tail optimisation disabled
-  while keeping disjoint partitioning enabled.
+The module exposes two primary helpers:
 
-For each problem size the script writes a JSON summary and produces bar charts
-comparing the runtime of the three variants (in all cases normalised to the
-full QuASAr baseline).
+``build_ablation_circuit``
+    Construct the disjoint hybrid circuit together with metadata describing each
+    sub-circuit.
 
-Run from the repository root, e.g.::
+``run_three_way_ablation``
+    Plan (and optionally execute) the circuit under three planner variants:
+    the full QuASAr configuration, a variant without disjoint partitioning, and
+    a variant without the hybrid prefix/tail splitting.  The function returns a
+    JSON-serialisable payload that can be written to disk or further processed
+    by notebooks.
 
-    python -m scripts.run_ablation_study --n 16 24 32 --num-blocks 4
+Example::
 
-The resulting artefacts are stored inside ``ablation_runs`` by default.
+    from scripts import run_ablation_study as ras
+
+    circuit, blocks = ras.build_ablation_circuit(num_components=3)
+    summary = ras.run_three_way_ablation(circuit)
+    print(summary["variants"][0]["partitions"])  # planned partitions
+
+The ``main`` entry point offers a thin CLI around these helpers and stores the
+results in JSON form for downstream analysis.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import time
-from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, MutableMapping, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
 from qiskit import QuantumCircuit
 
-from benchmarks import hybrid as hybrid_bench
-from benchmarks.disjoint import disjoint_preps_plus_tails
-from benchmarks.hybrid import (
-    stitched_disjoint_diag_bandedqft_diag,
-    stitched_disjoint_rand_bandedqft_rand,
-)
-from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
-from quasar.SSD import SSD, PartitionNode
+from quasar.SSD import PartitionNode, SSD
 from quasar.analyzer import analyze
-from quasar.baselines import run_baselines
-from quasar.backends.sv import estimate_sv_bytes
-from quasar.backends.tableau import stim_available
-from quasar.cost_estimator import CostEstimator
+from quasar.gate_metrics import circuit_metrics
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 
-apply_paper_style()
+@dataclass(frozen=True)
+class HybridBlockSpec:
+    """Describe one disjoint hybrid block inside the ablation circuit."""
+
+    index: int
+    qubits: Tuple[int, ...]
+    tail_kind: str  # either "random" (dense rotations) or "sparse"
 
 
-# --------------------------------------------------------------------------------------
-# Data containers and utilities
+def _partition_qubits(num_qubits: int, num_components: int) -> List[Tuple[int, ...]]:
+    if num_components <= 0:
+        raise ValueError("num_components must be positive")
+    if num_qubits < num_components:
+        raise ValueError("num_qubits must be at least num_components")
+    base = num_qubits // num_components
+    remainder = num_qubits % num_components
+    blocks: List[Tuple[int, ...]] = []
+    start = 0
+    for idx in range(num_components):
+        size = base + (1 if idx < remainder else 0)
+        block = tuple(range(start, start + size))
+        blocks.append(block)
+        start += size
+    return blocks
 
 
-@dataclass
-class VariantResult:
-    name: str
-    ok: bool
-    wall_s: Optional[float]
-    wall_estimate_s: Optional[float]
-    planner_config: Dict[str, Any]
-    plan: Optional[Dict[str, Any]] = None
-    execution: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    amp_ops: Optional[float] = None
-    peak_mem_bytes: Optional[int] = None
-    peak_mem_estimate_bytes: Optional[int] = None
-
-    def to_json(self) -> Dict[str, Any]:
-        payload = {
-            "name": self.name,
-            "ok": self.ok,
-            "wall_elapsed_s": self.wall_s,
-            "wall_estimated_s": self.wall_estimate_s,
-            "planner_config": self.planner_config,
-        }
-        if self.plan is not None:
-            payload["plan"] = self.plan
-        if self.execution is not None:
-            payload["execution"] = self.execution
-        if self.error is not None:
-            payload["error"] = self.error
-        if self.amp_ops is not None:
-            payload["amp_ops"] = self.amp_ops
-        if self.peak_mem_bytes is not None:
-            payload["peak_mem_bytes"] = self.peak_mem_bytes
-        if self.peak_mem_estimate_bytes is not None:
-            payload["peak_mem_estimated_bytes"] = self.peak_mem_estimate_bytes
-        return payload
-
-
-def _ensure_seed(seed: Optional[int], *, index: int) -> int:
-    if seed is None:
-        return 7 + 17 * index
-    return int(seed) + index
-
-
-def _collapse_to_single_partition(
-    circ,
-    metrics: MutableMapping[str, Any],
+def _apply_clifford_prefix(
+    qc: QuantumCircuit,
+    qubits: Iterable[int],
     *,
-    total_qubits: int,
-) -> SSD:
-    """Return an SSD with a single partition covering the entire circuit."""
+    depth: int,
+    rng: np.random.Generator,
+) -> None:
+    qubits = tuple(qubits)
+    for _ in range(depth):
+        for qubit in qubits:
+            gate = rng.choice(["h", "s", "sdg", "x", "z"])
+            getattr(qc, gate)(qubit)
+        for control, target in zip(qubits[:-1], qubits[1:]):
+            if rng.random() < 0.7:
+                qc.cx(control, target)
 
-    merged = SSD(meta={"total_qubits": int(total_qubits), "components": 1})
-    node = PartitionNode(
-        id=0,
-        qubits=list(range(int(total_qubits))),
-        circuit=circ,
-        metrics=dict(metrics),
-        meta={"ablation": "no_disjoint"},
+
+def _apply_random_rotation_tail(
+    qc: QuantumCircuit,
+    qubits: Iterable[int],
+    *,
+    depth: int,
+    rng: np.random.Generator,
+) -> None:
+    qubits = tuple(qubits)
+    for _ in range(depth):
+        for qubit in qubits:
+            theta, phi = rng.uniform(0.0, 2.0 * np.pi, size=2)
+            qc.ry(theta, qubit)
+            qc.rz(phi, qubit)
+        for control, target in zip(qubits[:-1], qubits[1:]):
+            if rng.random() < 0.6:
+                angle = rng.uniform(0.0, 2.0 * np.pi)
+                qc.crx(angle, control, target)
+
+
+def _apply_sparse_tail(
+    qc: QuantumCircuit,
+    qubits: Iterable[int],
+    *,
+    depth: int,
+    rng: np.random.Generator,
+) -> None:
+    qubits = tuple(qubits)
+    for _ in range(depth):
+        for qubit in qubits:
+            angle = rng.uniform(-np.pi, np.pi)
+            qc.rz(angle, qubit)
+        for control, target in zip(qubits[:-1], qubits[1:]):
+            if rng.random() < 0.3:
+                angle = rng.uniform(-np.pi, np.pi)
+                qc.cp(angle, control, target)
+
+
+TAIL_SEQUENCE = ("random", "sparse")
+
+
+def build_ablation_circuit(
+    *,
+    num_components: int = 4,
+    component_size: int = 4,
+    clifford_depth: int = 3,
+    tail_depth: int = 3,
+    tail_sequence: Optional[Sequence[str]] = None,
+    seed: int = 1,
+) -> Tuple[QuantumCircuit, List[HybridBlockSpec]]:
+    """Create a disjoint circuit with hybrid blocks ready for the ablation study."""
+
+    if component_size <= 0:
+        raise ValueError("component_size must be positive")
+    total_qubits = num_components * component_size
+    qc = QuantumCircuit(total_qubits)
+    rng = np.random.default_rng(seed)
+    blocks = _partition_qubits(total_qubits, num_components)
+
+    specs: List[HybridBlockSpec] = []
+    sequence = tail_sequence or TAIL_SEQUENCE
+    for index, block in enumerate(blocks):
+        tail_kind = sequence[index % len(sequence)]
+        _apply_clifford_prefix(qc, block, depth=clifford_depth, rng=rng)
+        if tail_kind == "random":
+            _apply_random_rotation_tail(qc, block, depth=tail_depth, rng=rng)
+        elif tail_kind == "sparse":
+            _apply_sparse_tail(qc, block, depth=tail_depth, rng=rng)
+        else:
+            raise ValueError(f"Unsupported tail kind '{tail_kind}'")
+        specs.append(HybridBlockSpec(index=index, qubits=block, tail_kind=tail_kind))
+
+    qc.metadata = {"hybrid_blocks": [asdict(spec) for spec in specs]}
+    return qc, specs
+
+
+def _collapse_to_single_partition(ssd: SSD, circuit: QuantumCircuit) -> SSD:
+    merged = SSD(meta=dict(ssd.meta))
+    merged.meta["components"] = 1
+    stitched = circuit.copy()
+    metrics = circuit_metrics(stitched)
+    merged.add(
+        PartitionNode(
+            id=0,
+            qubits=list(range(circuit.num_qubits)),
+            circuit=stitched,
+            metrics=metrics,
+            meta={"collapsed": True},
+        )
     )
-    merged.add(node)
     return merged
 
 
-def _extract_wall_elapsed(exec_payload: Any) -> Optional[float]:
-    if not isinstance(exec_payload, MutableMapping):
-        return None
-    meta = exec_payload.get("meta")
-    if isinstance(meta, MutableMapping):
-        wall = meta.get("wall_elapsed_s")
-        if isinstance(wall, (int, float)):
-            return float(wall)
-    results = exec_payload.get("results")
-    if isinstance(results, Iterable):
-        total = 0.0
-        found = False
-        for entry in results:
-            if not isinstance(entry, MutableMapping):
-                continue
-            elapsed = entry.get("elapsed_s")
-            if isinstance(elapsed, (int, float)):
-                total += float(elapsed)
-                found = True
-        if found:
-            return total
-    return None
-
-
-def _execution_status(exec_payload: Any) -> Tuple[bool, Optional[str]]:
-    if not isinstance(exec_payload, MutableMapping):
-        return False, "no_execution_payload"
-    results = exec_payload.get("results")
-    if not isinstance(results, Iterable):
-        return False, "no_results"
-    ok_all = True
-    notes: List[str] = []
-    errors: List[str] = []
-    for entry in results:
-        if not isinstance(entry, MutableMapping):
-            continue
-        status_raw = entry.get("status")
-        status = status_raw.lower() if isinstance(status_raw, str) else status_raw
-        if status in (None, "ok"):
-            continue
-        if status == "estimated":
-            err = entry.get("error")
-            if isinstance(err, str):
-                clean = err.strip()
-                if clean and clean.lower() != "completed":
-                    notes.append(f"p{entry.get('partition')}: {clean}")
-            continue
-        if status == "done":
-            continue
-        if status == "running":
-            continue
-        ok_all = False
-        err = entry.get("error")
-        if isinstance(err, str) and err:
-            errors.append(f"p{entry.get('partition')}: {err}")
-    if ok_all:
-        return True, "; ".join(notes) if notes else None
-    if errors:
-        return False, "; ".join(errors)
-    return False, "execution_failed"
-
-
-def _extract_peak_memory(exec_payload: Any) -> Tuple[Optional[int], Optional[int]]:
-    if not isinstance(exec_payload, MutableMapping):
-        return None, None
-    results = exec_payload.get("results")
-    if not isinstance(results, Iterable):
-        return None, None
-    measured: List[int] = []
-    estimated: List[int] = []
-    for entry in results:
-        if not isinstance(entry, MutableMapping):
-            continue
-        mem = entry.get("mem_bytes")
-        mem_est = entry.get("mem_bytes_estimated")
-        status = entry.get("status")
-        if isinstance(mem, (int, float)):
-            if status in (None, "ok"):
-                measured.append(int(mem))
-            else:
-                estimated.append(int(mem))
-        if isinstance(mem_est, (int, float)):
-            estimated.append(int(mem_est))
-    meas_peak = max(measured) if measured else None
-    est_peak = max(estimated) if estimated else None
-    return meas_peak, est_peak
-
-
-def _estimate_mem_for_backend(backend: str, n_qubits: int) -> int:
-    b = (backend or "sv").lower()
-    if b == "tableau":
-        return 64 * 1024 * 1024
-    if b == "dd":
-        return 256 * 1024 * 1024
-    return int(estimate_sv_bytes(n_qubits))
-
-
-def _estimate_peak_mem_from_plan(ssd: SSD) -> Optional[int]:
-    peak = 0
-    for node in ssd.partitions:
-        metrics = node.metrics or {}
-        n = int(metrics.get("num_qubits", 0))
-        need = _estimate_mem_for_backend(node.backend or "sv", n)
-        peak = max(peak, need)
-    return peak or None
-
-
-def _estimate_amp_ops(ssd: SSD, cfg: PlannerConfig) -> float:
-    est = CostEstimator.from_planner_config(cfg)
-    total = 0.0
-    for node in ssd.partitions:
-        metrics = node.metrics or {}
-        n = int(metrics.get("num_qubits", 0))
-        total_gates = int(metrics.get("num_gates", 0))
-        twoq = int(metrics.get("two_qubit_gates", 0))
-        oneq = max(0, total_gates - twoq)
-        backend = (node.backend or "sv").lower()
-        if backend == "tableau":
-            total += est.tableau_prefix_cost(n, oneq, twoq)
-        else:
-            total += est.sv_cost(n, oneq, twoq)
-    return float(total)
-
-
-def _build_ablation_circuit(
-    *,
-    num_qubits: int,
-    num_blocks: int,
-    tail_depth: int,
-    angle_scale: float,
-    sparsity: float,
-    bandwidth: int,
-    seed: int,
-    **_: Any,
-) -> QuantumCircuit:
-    """Create a deep hybrid/disjoint circuit for the ablation study."""
-
-    if num_qubits <= 0:
-        raise ValueError("num_qubits must be positive")
-    if num_blocks <= 0 or num_blocks > num_qubits:
-        raise ValueError("num_blocks must be between 1 and num_qubits")
-
-    tail_depth = max(1, int(tail_depth))
-    angle_scale = float(angle_scale)
-    sparsity = float(sparsity)
-    bandwidth = max(1, int(bandwidth))
-    seed = int(seed)
-
-    disjoint_base = disjoint_preps_plus_tails(
-        num_qubits=num_qubits,
-        num_blocks=num_blocks,
-        block_prep="ghz",
-        tail_kind="hybrid",
-        tail_depth=tail_depth,
-        angle_scale=angle_scale,
-        sparsity=sparsity,
-        bandwidth=bandwidth,
-        seed=seed,
-    )
-
-    block_size = max(2, math.ceil(num_qubits / num_blocks))
-    neighbor_layers = max(1, num_blocks - 1)
-    rand_depth = max(tail_depth, 8)
-    diag_depth = max(tail_depth // 2, 6)
-
-    hybrid_rand = stitched_disjoint_rand_bandedqft_rand(
-        num_qubits=num_qubits,
-        block_size=block_size,
-        depth_pre=rand_depth,
-        depth_post=rand_depth,
-        qft_bandwidth=max(2, bandwidth),
-        neighbor_bridge_layers=neighbor_layers,
-        seed=seed + 101,
-    )
-
-    hybrid_diag = stitched_disjoint_diag_bandedqft_diag(
-        num_qubits=num_qubits,
-        block_size=block_size,
-        depth_pre=diag_depth,
-        depth_post=diag_depth,
-        qft_bandwidth=max(2, bandwidth + 1),
-        neighbor_bridge_layers=neighbor_layers,
-        seed=seed + 202,
-    )
-
-    qc = QuantumCircuit(num_qubits)
-    qc.compose(disjoint_base, inplace=True)
-    qc.barrier()
-    qc.compose(hybrid_rand, inplace=True)
-    qc.barrier()
-    qc.compose(hybrid_diag, inplace=True)
-
-    rng = np.random.default_rng(seed + 303)
-    clifford_oneq = ("h", "s", "sdg", "x", "z")
-    clifford_twoq = ("cx", "cz", "swap")
-
-    blocks: List[List[int]] = []
-    base = num_qubits // num_blocks
-    remainder = num_qubits % num_blocks
-    start = 0
-    for index in range(num_blocks):
-        size = base + (1 if index < remainder else 0)
-        block = list(range(start, start + size))
-        if block:
-            blocks.append(block)
-        start += size
-
-    per_block_depth = max(3, tail_depth // 2)
-    tail_styles = ("clifford", "diag", "general")
-    has_general_tail = False
-    for index, block in enumerate(blocks):
-        style = tail_styles[index % len(tail_styles)]
-        if index == len(blocks) - 1 and not has_general_tail:
-            style = "general"
-
-        for _ in range(per_block_depth):
-            if style == "clifford":
-                for qubit in block:
-                    getattr(qc, rng.choice(clifford_oneq))(qubit)
-                shuffled = block.copy()
-                rng.shuffle(shuffled)
-                for a, b in zip(shuffled[::2], shuffled[1::2]):
-                    getattr(qc, rng.choice(clifford_twoq))(a, b)
-            elif style == "diag":
-                for qubit in block:
-                    theta = float(rng.uniform(-angle_scale, angle_scale))
-                    qc.rz(theta, qubit)
-                shuffled = block.copy()
-                rng.shuffle(shuffled)
-                for a, b in zip(shuffled[::2], shuffled[1::2]):
-                    qc.cz(a, b)
-            else:  # style == "general"
-                has_general_tail = True
-                for qubit in block:
-                    theta = float(rng.uniform(-angle_scale, angle_scale))
-                    phi = float(rng.uniform(-angle_scale, angle_scale))
-                    qc.rx(theta, qubit)
-                    qc.ry(phi, qubit)
-                shuffled = block.copy()
-                rng.shuffle(shuffled)
-                for a, b in zip(shuffled[::2], shuffled[1::2]):
-                    qc.cx(a, b)
-                    lam = float(rng.uniform(-angle_scale, angle_scale))
-                    qc.crx(lam, a, b)
-        qc.barrier(*block)
-
-    return qc
-
-
-class PlanValidationError(RuntimeError):
-    """Raised when a planned SSD does not exercise all expected features."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        missing_backends: Optional[Iterable[str]] = None,
-        needs_hybrid: bool = False,
-        max_qubits: int = 0,
-    ) -> None:
-        super().__init__(message)
-        self.missing_backends = tuple(sorted(set(missing_backends or ())))
-        self.needs_hybrid = bool(needs_hybrid)
-        self.max_qubits = int(max_qubits)
-
-
-def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
-    partitions = plan.get("partitions") if isinstance(plan, MutableMapping) else None
-    if not isinstance(partitions, Iterable):
-        raise RuntimeError("plan does not contain a partitions list")
-
-    backend_counts: Counter[str] = Counter()
-    has_hybrid_chain = False
-    max_qubits = 0
-    for entry in partitions:
-        if not isinstance(entry, MutableMapping):
-            continue
-        backend = entry.get("backend")
-        if isinstance(backend, str):
-            backend_counts[backend.lower()] += 1
-        meta = entry.get("meta")
-        if isinstance(meta, MutableMapping) and meta.get("chain_id"):
-            has_hybrid_chain = True
-        nq = entry.get("num_qubits")
-        if isinstance(nq, (int, float)):
-            max_qubits = max(max_qubits, int(nq))
-
-    missing: List[str] = []
-    if backend_counts.get("sv", 0) == 0:
-        missing.append("sv")
-    if stim_available() and backend_counts.get("tableau", 0) == 0:
-        missing.append("tableau")
-    if missing:
-        raise PlanValidationError(
-            "Expected the ablation circuit to exercise the following backends "
-            f"but they were absent from the full plan: {', '.join(sorted(set(missing)))} "
-            f"(largest partition has {max_qubits} qubits; consider reducing --num-blocks or"
-            " increasing --n)",
-            missing_backends=missing,
-            max_qubits=max_qubits,
-        )
-    if not has_hybrid_chain:
-        raise PlanValidationError(
-            "Expected at least one hybrid chain in the full plan",
-            needs_hybrid=True,
-            max_qubits=max_qubits,
-        )
-
-
-def _attempt_circuit_construction(
-    base_params: Dict[str, Any],
-    cfg_full: PlannerConfig,
-    *,
-    max_resamples: int,
-) -> Tuple[
-    Optional[Any],
-    Optional[Any],
-    int,
-    int,
-    bool,
-    bool,
-    Optional[PlanValidationError],
-    bool,
-]:
-    """Try to build a circuit matching ``base_params`` that passes validation."""
-
-    original_blocks = int(base_params["num_blocks"])
-    original_seed = int(base_params["seed"])
-    max_resamples = max(0, int(max_resamples))
-
-    last_validation_error: Optional[PlanValidationError] = None
-    fallback_payload: Optional[Tuple[Any, Any, int, int]] = None
-
-    def _iter_seed_candidates() -> Iterable[int]:
-        yield original_seed
-        for offset in range(1, max_resamples + 1):
-            yield original_seed + offset
-
-    for seed_index, seed_candidate in enumerate(_iter_seed_candidates()):
-        if seed_index > 0:
-            print(f"    -> resampling circuit with seed={seed_candidate}")
-        for blocks in range(original_blocks, 0, -1):
-            circuit_key = base_params.get("circuit", "disjoint_preps_plus_tails")
-            candidate_params = dict(base_params)
-            candidate_params.update(
-                {
-                    "num_qubits": base_params["num_qubits"],
-                    "num_blocks": blocks,
-                    "seed": seed_candidate,
-                }
-            )
-            registry = getattr(hybrid_bench, "CIRCUIT_REGISTRY", {})
-            if circuit_key in registry:
-                circ_candidate = hybrid_bench.build(circuit_key, **candidate_params)
-            else:
-                circ_candidate = _build_ablation_circuit(
-                    num_qubits=base_params["num_qubits"],
-                    num_blocks=blocks,
-                    tail_depth=base_params["tail_depth"],
-                    angle_scale=base_params["angle_scale"],
-                    sparsity=base_params["sparsity"],
-                    bandwidth=base_params["bandwidth"],
-                    seed=seed_candidate,
-                    depth_clifford=base_params.get("depth_clifford"),
-                    depth_rot=base_params.get("depth_rot"),
-                    bridge_layers=base_params.get("bridge_layers"),
-                )
-            analysis_candidate = analyze(circ_candidate)
-            try:
-                planned_candidate = plan(analysis_candidate.ssd, cfg_full)
-            except Exception as exc:  # pragma: no cover - defensive guard
-                raise RuntimeError(
-                    "Planning failed for candidate circuit "
-                    f"(seed={seed_candidate}, num_blocks={blocks}): {exc}"
-                ) from exc
-            try:
-                _validate_plan_features(planned_candidate.to_dict())
-            except PlanValidationError as exc:
-                last_validation_error = exc
-                if blocks > 1 and (exc.missing_backends or exc.needs_hybrid):
-                    reason_bits = []
-                    if exc.missing_backends:
-                        reason_bits.append(
-                            "missing backends: " + ", ".join(exc.missing_backends)
-                        )
-                    if exc.needs_hybrid:
-                        reason_bits.append("missing hybrid chain")
-                    next_blocks = blocks - 1
-                    print(
-                        "    -> ",
-                        "; ".join(reason_bits) or "validation failure",
-                        f"; retrying with num_blocks={next_blocks}",
-                        sep="",
-                    )
-                    continue
-                fallback_payload = (
-                    circ_candidate,
-                    analysis_candidate,
-                    blocks,
-                    seed_candidate,
-                )
-                break
-            else:
-                return (
-                    circ_candidate,
-                    analysis_candidate,
-                    blocks,
-                    seed_candidate,
-                    blocks != original_blocks,
-                    seed_candidate != original_seed,
-                    None,
-                    True,
-                )
-    if fallback_payload is not None:
-        circ_candidate, analysis_candidate, blocks, seed_candidate = fallback_payload
-        return (
-            circ_candidate,
-            analysis_candidate,
-            blocks,
-            seed_candidate,
-            blocks != original_blocks,
-            seed_candidate != original_seed,
-            last_validation_error,
-            False,
-        )
-    return (
-        None,
-        None,
-        original_blocks,
-        original_seed,
-        False,
-        False,
-        last_validation_error,
-        False,
-    )
-
-
-def _run_variant(
-    name: str,
-    ssd: SSD,
-    planner_cfg: PlannerConfig,
-    exec_cfg: ExecutionConfig,
-) -> VariantResult:
-    try:
-        planned = plan(ssd, planner_cfg)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        return VariantResult(
-            name=name,
-            ok=False,
-            wall_s=None,
-            wall_estimate_s=None,
-            planner_config=asdict(planner_cfg),
-            error=f"plan_failed: {exc}",
-        )
-
-    amp_ops = _estimate_amp_ops(planned, planner_cfg)
-    peak_mem_plan = _estimate_peak_mem_from_plan(planned)
-
-    try:
-        exec_payload = execute_ssd(planned, exec_cfg)
-        wall = _extract_wall_elapsed(exec_payload)
-    except Exception as exc:  # pragma: no cover - defensive guard
-        return VariantResult(
-            name=name,
-            ok=False,
-            wall_s=None,
-            wall_estimate_s=None,
-            planner_config=asdict(planner_cfg),
-            plan=planned.to_dict(),
-            error=f"execute_failed: {exc}",
-            amp_ops=amp_ops,
-            peak_mem_bytes=None,
-            peak_mem_estimate_bytes=peak_mem_plan,
-        )
-
-    ok_exec, exec_error = _execution_status(exec_payload)
-    peak_measured, peak_estimated = _extract_peak_memory(exec_payload)
-    if peak_estimated is None:
-        peak_estimated = peak_mem_plan
-    if peak_measured is None:
-        # Fall back to the planned peak (and only if that's unavailable, use the estimate).
-        peak_measured = (
-            peak_mem_plan if peak_mem_plan is not None else peak_estimated
-        )
-
-    return VariantResult(
-        name=name,
-        ok=ok_exec,
-        wall_s=wall if ok_exec else None,
-        wall_estimate_s=None,
-        planner_config=asdict(planner_cfg),
-        plan=planned.to_dict(),
-        execution=exec_payload,
-        error=(exec_error if ok_exec or exec_error else "execution_failed"),
-        amp_ops=amp_ops,
-        peak_mem_bytes=peak_measured,
-        peak_mem_estimate_bytes=peak_estimated,
-    )
-
-
-def _format_label(params: MutableMapping[str, Any]) -> str:
-    n = int(params.get("num_qubits", 0))
-    blocks = int(params.get("num_blocks", 0))
-    return f"n={n}, blocks={blocks}"
-
-
-def _make_runtime_plot(
-    records: List[Dict[str, Any]],
-    *,
-    out_path: Path,
-    title: str,
-) -> None:
-    labels = []
-    rel_full, rel_nodisjoint, rel_nohybrid = [], [], []
-
-    for rec in records:
-        params = rec.get("params", {})
-        variants = rec.get("variants", {})
-        labels.append(_format_label(params))
-
-        def _time(key: str) -> float:
-            data = variants.get(key, {})
-            if not isinstance(data, MutableMapping):
-                return math.nan
-            wall = data.get("wall_elapsed_s")
-            if isinstance(wall, (int, float)):
-                return float(wall)
-            wall_est = data.get("wall_estimated_s")
-            return float(wall_est) if isinstance(wall_est, (int, float)) else math.nan
-
-        t_full = _time("full")
-        t_nodisjoint = _time("no_disjoint")
-        t_nohybrid = _time("no_hybrid")
-
-        if math.isnan(t_full) or t_full == 0.0:
-            rel_full.append(math.nan)
-            rel_nodisjoint.append(math.nan)
-            rel_nohybrid.append(math.nan)
-        else:
-            rel_full.append(1.0)
-            rel_nodisjoint.append(
-                t_nodisjoint / t_full if not math.isnan(t_nodisjoint) else math.nan
-            )
-            rel_nohybrid.append(
-                t_nohybrid / t_full if not math.isnan(t_nohybrid) else math.nan
-            )
-
-    x = np.arange(len(labels))
-    width = 0.25
-
-    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 1.5), 5))
-    bars_full = ax.bar(
-        x - width,
-        rel_full,
-        width,
-        label="Full QuASAr",
-        color=PASTEL_COLORS.get("tableau"),
-        edgecolor=EDGE_COLOR,
-    )
-    bars_nodisjoint = ax.bar(
-        x,
-        rel_nodisjoint,
-        width,
-        label="No disjoint partitioning",
-        color=PASTEL_COLORS.get("sv"),
-        edgecolor=EDGE_COLOR,
-    )
-    bars_nohybrid = ax.bar(
-        x + width,
-        rel_nohybrid,
-        width,
-        label="No hybrid splitting",
-        color=PASTEL_COLORS.get("dd"),
-        edgecolor=EDGE_COLOR,
-    )
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=25, ha="right")
-    ax.set_ylabel("Relative runtime vs full QuASAr")
-    ax.set_title(title)
-    ax.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
-    ax.set_yscale("log")
-
-    for bars, values in ((bars_nodisjoint, rel_nodisjoint), (bars_nohybrid, rel_nohybrid)):
-        for bar, value in zip(bars, values):
-            if value is None or math.isnan(value) or value <= 0:
-                continue
-            text = f"{value:.1f}×"
-            text_y = value * 1.1
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                text_y,
-                text,
-                ha="center",
-                va="bottom",
-                fontsize=10,
-            )
-
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=200)
-    plt.close(fig)
-
-
-def _make_memory_plot(
-    records: List[Dict[str, Any]],
-    *,
-    out_path: Path,
-    title: str,
-) -> None:
-    labels = []
-    mem_full, mem_nodisjoint, mem_nohybrid = [], [], []
-
-    for rec in records:
-        params = rec.get("params", {})
-        variants = rec.get("variants", {})
-        labels.append(_format_label(params))
-
-        def _mem(key: str) -> float:
-            data = variants.get(key, {})
-            if not isinstance(data, MutableMapping):
-                return math.nan
-            for candidate in ("peak_mem_bytes", "peak_mem_estimated_bytes"):
-                value = data.get(candidate)
-                if isinstance(value, (int, float)):
-                    return float(value)
-            return math.nan
-
-        m_full = _mem("full")
-        m_nd = _mem("no_disjoint")
-        m_nh = _mem("no_hybrid")
-
-        if math.isnan(m_full) or m_full == 0.0:
-            mem_full.append(math.nan)
-            mem_nodisjoint.append(math.nan)
-            mem_nohybrid.append(math.nan)
-        else:
-            mem_full.append(1.0)
-            mem_nodisjoint.append(m_nd / m_full if not math.isnan(m_nd) else math.nan)
-            mem_nohybrid.append(m_nh / m_full if not math.isnan(m_nh) else math.nan)
-
-    x = np.arange(len(labels))
-    width = 0.25
-
-    plt.figure(figsize=(max(8, len(labels) * 1.5), 5))
-    plt.bar(
-        x - width,
-        mem_full,
-        width,
-        label="Full QuASAr",
-        color=PASTEL_COLORS.get("tableau"),
-        edgecolor=EDGE_COLOR,
-    )
-    plt.bar(
-        x,
-        mem_nodisjoint,
-        width,
-        label="No disjoint partitioning",
-        color=PASTEL_COLORS.get("sv"),
-        edgecolor=EDGE_COLOR,
-    )
-    plt.bar(
-        x + width,
-        mem_nohybrid,
-        width,
-        label="No hybrid splitting",
-        color=PASTEL_COLORS.get("dd"),
-        edgecolor=EDGE_COLOR,
-    )
-
-    plt.xticks(x, labels, rotation=25, ha="right")
-    plt.ylabel("Relative peak memory vs full QuASAr")
-    plt.title(title)
-    plt.axhline(1.0, color=EDGE_COLOR, linestyle="--", linewidth=1.0, alpha=0.6)
-    values = [
-        val
-        for series in (mem_full, mem_nodisjoint, mem_nohybrid)
-        for val in series
-        if isinstance(val, (int, float)) and not math.isnan(val) and val > 0
-    ]
-    if values:
-        vmax = max(values)
-        vmin = min(values)
-        if vmax / vmin >= 20:
-            ax = plt.gca()
-            ax.set_yscale("log")
-            ax.yaxis.set_major_locator(mticker.LogLocator(base=10))
-            ax.yaxis.set_minor_locator(mticker.LogLocator(base=10, subs=np.arange(2, 10) * 0.1))
-            ax.yaxis.set_minor_formatter(mticker.NullFormatter())
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=200)
-    plt.close()
-
-
-# --------------------------------------------------------------------------------------
-# CLI
-
-
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run an ablation study on QuASAr's partitioning components",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument("--n", "--num-qubits", nargs="+", type=int, dest="num_qubits", required=True)
-    parser.add_argument(
-        "--num-blocks",
-        type=int,
-        default=2,
-        help="Number of disjoint blocks per circuit (use smaller values to keep each block large enough for hybrid/DD splits)",
-    )
-    parser.add_argument(
-        "--circuit",
-        type=str,
-        default="disjoint_preps_plus_tails",
-        help="Circuit builder key; supports hybrid.CIRCUIT_REGISTRY keys as well",
-    )
-    parser.add_argument("--tail-depth", type=int, default=24, help="Depth of diagonal tails inside each block")
-    parser.add_argument("--angle-scale", type=float, default=0.1, help="Rotation angle scale for diagonal tails")
-    parser.add_argument("--sparsity", type=float, default=0.10, help="RZ sparsity inside diagonal tails")
-    parser.add_argument("--bandwidth", type=int, default=2, help="CZ bandwidth inside diagonal tails")
-    parser.add_argument("--seed", type=int, default=None, help="Base seed for circuit construction")
-    parser.add_argument(
-        "--depth-clifford",
-        type=int,
-        default=512,
-        help="Clifford tail depth for even-indexed blocks (hybrid stitched circuit)",
-    )
-    parser.add_argument(
-        "--depth-rot",
-        type=int,
-        default=128,
-        help="Rotation tail depth for odd-indexed blocks (hybrid stitched circuit)",
-    )
-    parser.add_argument(
-        "--bridge-layers",
-        type=int,
-        default=4,
-        help="Inter-block bridge layers (hybrid stitched circuit)",
-    )
-    parser.add_argument(
-        "--max-resamples",
-        type=int,
-        default=5,
-        help=(
-            "Maximum number of additional circuit seeds to try when the default "
-            "configuration fails the backend sanity checks (set to 0 to disable)"
-        ),
-    )
-    parser.add_argument(
-        "--max-qubit-increase",
-        type=int,
-        default=4,
-        help=(
-            "Maximum number of extra qubits to try automatically when the requested "
-            "problem size cannot satisfy the backend coverage checks"
-        ),
-    )
-    parser.add_argument("--conv-factor", type=float, default=64.0, help="Conversion amortisation factor")
-    parser.add_argument("--twoq-factor", type=float, default=4.0, help="Statevector two-qubit gate factor")
-    parser.add_argument("--max-ram-gb", type=float, default=64.0, help="RAM budget for planning/execution")
-    parser.add_argument("--sv-ampops-per-sec", type=float, default=None, help="Override SV baseline speed (optional)")
-    parser.add_argument("--out-dir", type=str, default="ablation_runs", help="Directory to store outputs")
-    parser.add_argument(
-        "--json-name",
-        type=str,
-        default="hybrid_disjoint_results.json",
-        help="Name of the JSON summary file",
-    )
-    parser.add_argument(
-        "--times-fig",
-        type=str,
-        default="ablation_relative_runtime.png",
-        help="Filename for the relative runtime bar chart",
-    )
-    parser.add_argument(
-        "--memory-fig",
-        "--relative-fig",
-        dest="memory_fig",
-        type=str,
-        default="ablation_relative_memory.png",
-        help="Filename for the relative peak memory bar chart",
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: Optional[List[str]] = None) -> None:
-    args = parse_args(argv)
-
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    exec_cfg = ExecutionConfig(max_ram_gb=float(args.max_ram_gb))
-    records: List[Dict[str, Any]] = []
-
-    t_start = time.time()
-    combos = list(enumerate(args.num_qubits, start=1))
-    total = len(combos)
-
-    for index, n in combos:
-        seed = _ensure_seed(args.seed, index=index)
-        params = {
-            "num_qubits": int(n),
-            "num_blocks": int(args.num_blocks),
-            "circuit": str(args.circuit),
-            "tail_depth": int(args.tail_depth),
-            "angle_scale": float(args.angle_scale),
-            "sparsity": float(args.sparsity),
-            "bandwidth": int(args.bandwidth),
-            "seed": seed,
-            "depth_clifford": int(args.depth_clifford),
-            "depth_rot": int(args.depth_rot),
-            "bridge_layers": int(args.bridge_layers),
-        }
-        print(f"[{index}/{total}] Building circuit with params: {params}")
-
-        planner_base = dict(
-            max_ram_gb=float(args.max_ram_gb),
-            conv_amp_ops_factor=float(args.conv_factor),
-            sv_twoq_factor=float(args.twoq_factor),
-        )
-
-        cfg_full = PlannerConfig(**planner_base)
-
-        requested_qubits = int(params["num_qubits"])
-        requested_blocks = int(params["num_blocks"])
-        requested_seed = int(params["seed"])
-        max_qubit_increase = max(0, int(args.max_qubit_increase))
-
-        circ = None
-        analysis = None
-        final_adjusted_blocks = False
-        final_adjusted_seed = False
-        adjusted_qubits = False
-        last_validation_error: Optional[PlanValidationError] = None
-        validation_warning: Optional[str] = None
-
-        for qubit_offset in range(max_qubit_increase + 1):
-            candidate_qubits = requested_qubits + qubit_offset
-            if qubit_offset > 0:
-                print(f"    -> increasing num_qubits to {candidate_qubits}")
-            candidate_params = dict(params)
-            candidate_params["num_qubits"] = candidate_qubits
-            (
-                circ_candidate,
-                analysis_candidate,
-                selected_blocks,
-                selected_seed,
-                adjusted_blocks,
-                adjusted_seed,
-                validation_error,
-                validated_candidate,
-            ) = _attempt_circuit_construction(
-                candidate_params,
-                cfg_full,
-                max_resamples=args.max_resamples,
-            )
-            last_validation_error = validation_error
-            if circ_candidate is None or analysis_candidate is None:
-                continue
-            circ = circ_candidate
-            analysis = analysis_candidate
-            params["num_qubits"] = candidate_qubits
-            params["num_blocks"] = selected_blocks
-            params["seed"] = selected_seed
-            final_adjusted_blocks = adjusted_blocks
-            final_adjusted_seed = adjusted_seed
-            adjusted_qubits = candidate_qubits != requested_qubits
-            if not validated_candidate and validation_error is not None:
-                validation_warning = str(validation_error)
-            break
-        else:
-            detail = (
-                f": {last_validation_error}" if last_validation_error is not None else ""
-            )
-            raise RuntimeError(
-                "Circuit sanity check failed: unable to satisfy backend requirements"
-                + detail
-            )
-
-        if circ is None or analysis is None:
-            raise RuntimeError("Internal error: missing validated circuit")
-
-        if adjusted_qubits:
-            print(
-                f"    -> proceeding with num_qubits={params['num_qubits']} "
-                f"(requested {requested_qubits})"
-            )
-            params.setdefault("num_qubits_requested", requested_qubits)
-        if final_adjusted_blocks:
-            print(
-                f"    -> proceeding with num_blocks={params['num_blocks']} "
-                f"(requested {requested_blocks})"
-            )
-            params.setdefault("num_blocks_requested", requested_blocks)
-        if final_adjusted_seed:
-            print(
-                f"    -> proceeding with seed={params['seed']} "
-                f"(requested {requested_seed})"
-            )
-            params.setdefault("seed_requested", requested_seed)
-        if validation_warning:
-            print(
-                "    -> proceeding with best-effort circuit despite validation warning: ",
-                validation_warning,
-                sep="",
-            )
-            params.setdefault("validation_warning", validation_warning)
-
-        variants: Dict[str, VariantResult] = {}
-        variants["full"] = _run_variant("full", analysis.ssd, cfg_full, exec_cfg)
-
-        merged_ssd = _collapse_to_single_partition(
-            circ,
-            analysis.metrics_global,
-            total_qubits=params["num_qubits"],
-        )
-        cfg_nodisjoint = PlannerConfig(**planner_base)
-        variants["no_disjoint"] = _run_variant("no_disjoint", merged_ssd, cfg_nodisjoint, exec_cfg)
-
-        cfg_nohybrid = PlannerConfig(**planner_base, hybrid_clifford_tail=False)
-        variants["no_hybrid"] = _run_variant("no_hybrid", analysis.ssd, cfg_nohybrid, exec_cfg)
-
-        amp_scale: Optional[float] = None
-        for key in ("full", "no_disjoint", "no_hybrid"):
-            cand = variants.get(key)
-            if not cand or cand.amp_ops in (None, 0.0) or cand.wall_s in (None, 0.0):
-                continue
-            scale = cand.wall_s / cand.amp_ops
-            if scale and math.isfinite(scale) and scale > 0:
-                amp_scale = scale
-                break
-        if amp_scale is None:
-            for cand in variants.values():
-                if not cand or cand.amp_ops in (None, 0.0) or cand.wall_s in (None, 0.0):
-                    continue
-                scale = cand.wall_s / cand.amp_ops
-                if scale and math.isfinite(scale) and scale > 0:
-                    amp_scale = scale
-                    break
-
-        for cand in variants.values():
-            if cand.wall_s is not None:
-                cand.wall_estimate_s = cand.wall_s
-            elif cand.amp_ops and amp_scale:
-                cand.wall_estimate_s = cand.amp_ops * amp_scale
-            else:
-                cand.wall_estimate_s = None
-
-        print(
-            "    -> times (s):",
-            {
-                k: (
-                    v.wall_s
-                    if v.wall_s is not None
-                    else v.wall_estimate_s
-                )
-                for k, v in variants.items()
+@dataclass
+class VariantRecord:
+    name: str
+    planner: PlannerConfig
+    partitions: List[Dict[str, object]]
+    execution: Optional[Dict[str, object]] = None
+
+    def to_json(self) -> Dict[str, object]:
+        payload = {
+            "name": self.name,
+            "planner": {
+                "max_ram_gb": self.planner.max_ram_gb,
+                "prefer_dd": self.planner.prefer_dd,
+                "hybrid_clifford_tail": self.planner.hybrid_clifford_tail,
+                "conv_amp_ops_factor": self.planner.conv_amp_ops_factor,
+                "sv_twoq_factor": self.planner.sv_twoq_factor,
             },
+            "partitions": self.partitions,
+        }
+        if self.execution is not None:
+            payload["execution"] = self.execution
+        return payload
+
+
+def _partition_payload(ssd: SSD) -> List[Dict[str, object]]:
+    return [partition.to_dict() for partition in ssd.partitions]
+
+
+def run_three_way_ablation(
+    circuit: QuantumCircuit,
+    *,
+    planner_cfg: Optional[PlannerConfig] = None,
+    execute: bool = False,
+    exec_cfg: Optional[ExecutionConfig] = None,
+) -> Dict[str, object]:
+    """Plan the circuit under three planner configurations."""
+
+    analysis = analyze(circuit)
+    base_ssd = analysis.ssd
+
+    planner_base = planner_cfg or PlannerConfig()
+    exec_cfg = exec_cfg or ExecutionConfig()
+
+    results: List[VariantRecord] = []
+
+    planned_full = plan(base_ssd, planner_base)
+    exec_full = execute_ssd(planned_full, exec_cfg) if execute else None
+    results.append(
+        VariantRecord(
+            name="full",
+            planner=planner_base,
+            partitions=_partition_payload(planned_full),
+            execution=exec_full,
         )
+    )
 
-        try:
-            baselines = run_baselines(
-                circ,
-                which=["tableau", "sv", "dd"],
-                per_partition=False,
-                max_ram_gb=float(args.max_ram_gb),
-                sv_ampops_per_sec=args.sv_ampops_per_sec,
-            )
-        except Exception as exc:  # pragma: no cover - defensive guard
-            baselines = {"error": str(exc)}
-
-        records.append(
-            {
-                "params": params,
-                "variants": {name: result.to_json() for name, result in variants.items()},
-                "baselines": baselines,
-            }
+    merged = _collapse_to_single_partition(base_ssd, circuit)
+    planned_nodisjoint = plan(merged, planner_base)
+    exec_nodisjoint = execute_ssd(planned_nodisjoint, exec_cfg) if execute else None
+    results.append(
+        VariantRecord(
+            name="no_disjoint",
+            planner=planner_base,
+            partitions=_partition_payload(planned_nodisjoint),
+            execution=exec_nodisjoint,
         )
+    )
 
-    summary = {
-        "meta": {
-            "created_at": time.time(),
-            "args": vars(args),
-            "elapsed_s": time.time() - t_start,
+    nohybrid_cfg = PlannerConfig(
+        max_ram_gb=planner_base.max_ram_gb,
+        max_concurrency=planner_base.max_concurrency,
+        prefer_dd=planner_base.prefer_dd,
+        hybrid_clifford_tail=False,
+        conv_amp_ops_factor=planner_base.conv_amp_ops_factor,
+        sv_twoq_factor=planner_base.sv_twoq_factor,
+    )
+    planned_nohybrid = plan(base_ssd, nohybrid_cfg)
+    exec_nohybrid = execute_ssd(planned_nohybrid, exec_cfg) if execute else None
+    results.append(
+        VariantRecord(
+            name="no_hybrid",
+            planner=nohybrid_cfg,
+            partitions=_partition_payload(planned_nohybrid),
+            execution=exec_nohybrid,
+        )
+    )
+
+    return {
+        "circuit": {
+            "num_qubits": circuit.num_qubits,
+            "depth": circuit.depth(),
+            "metadata": circuit.metadata,
         },
-        "cases": records,
+        "analysis": {
+            "global_metrics": analysis.metrics_global,
+            "num_partitions": len(base_ssd.partitions),
+        },
+        "variants": [record.to_json() for record in results],
     }
 
-    json_path = out_dir / args.json_name
-    with json_path.open("w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2)
-    print(f"Wrote JSON summary to {json_path}")
 
-    if records:
-        times_path = out_dir / args.times_fig
-        _make_runtime_plot(records, out_path=times_path, title="QuASAr ablation study: relative runtime")
-        print(f"Wrote runtime bar chart to {times_path}")
-
-        mem_path = out_dir / args.memory_fig
-        _make_memory_plot(records, out_path=mem_path, title="QuASAr ablation study: relative peak memory")
-        print(f"Wrote memory bar chart to {mem_path}")
+def _parse_tail_sequence(text: Optional[str]) -> Optional[List[str]]:
+    if not text:
+        return None
+    parts = [entry.strip().lower() for entry in text.split(",") if entry.strip()]
+    if not parts:
+        return None
+    for entry in parts:
+        if entry not in {"random", "sparse"}:
+            raise ValueError(f"Unsupported tail kind '{entry}' in sequence")
+    return parts
 
 
-if __name__ == "__main__":
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--num-components", type=int, default=4, help="Number of disjoint hybrid blocks")
+    parser.add_argument("--component-size", type=int, default=4, help="Number of qubits per block")
+    parser.add_argument("--clifford-depth", type=int, default=3, help="Depth of the Clifford prefix in each block")
+    parser.add_argument("--tail-depth", type=int, default=3, help="Depth of the non-Clifford tail in each block")
+    parser.add_argument(
+        "--tail-sequence",
+        type=str,
+        default=None,
+        help="Comma separated tail pattern (values: random,sparse). Defaults to alternating random/sparse.",
+    )
+    parser.add_argument("--seed", type=int, default=1, help="Random seed for the circuit constructor")
+    parser.add_argument("--execute", action="store_true", help="Execute the planned SSDs via the simulation engine")
+    parser.add_argument("--out", type=str, default=None, help="Optional path to store the JSON summary")
+    args = parser.parse_args(argv)
+
+    circuit, _ = build_ablation_circuit(
+        num_components=args.num_components,
+        component_size=args.component_size,
+        clifford_depth=args.clifford_depth,
+        tail_depth=args.tail_depth,
+        tail_sequence=_parse_tail_sequence(args.tail_sequence),
+        seed=args.seed,
+    )
+
+    summary = run_three_way_ablation(circuit, execute=args.execute)
+
+    if args.out:
+        out_path = Path(args.out).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(summary, indent=2))
+    else:
+        print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via CLI smoke tests
     main()
