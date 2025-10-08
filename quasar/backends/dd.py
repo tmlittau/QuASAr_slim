@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -12,6 +13,9 @@ import mqt.ddsim as ddsim
 from ._partition import Operation, extract_operations
 
 LOGGER = logging.getLogger(__name__)
+
+
+_DDSIM_LOCK = threading.Lock()
 
 
 def ddsim_available() -> bool:
@@ -96,25 +100,26 @@ class DecisionDiagramBackend:
         for op in ops:
             _apply_operation(qc, op)
 
-        simulator = ddsim.CircuitSimulator(qc)
-        try:
-            simulator.simulate(0)
-        except TimeoutError:
-            raise
-        except Exception:
-            LOGGER.exception("DDSIM failed while executing the partition.")
-            return None
-
-        if progress_cb is not None:
-            progress_cb(max(1, len(ops)))
-
-        dd = simulator.get_constructed_dd()
-        if want_statevector:
+        with _DDSIM_LOCK:
+            simulator = ddsim.CircuitSimulator(qc)
             try:
-                return np.array(dd.get_vector(), dtype=np.complex128)
+                simulator.simulate(0)
             except TimeoutError:
                 raise
             except Exception:
-                LOGGER.exception("DDSIM did not provide a statevector representation.")
+                LOGGER.exception("DDSIM failed while executing the partition.")
                 return None
-        return dd
+
+            if progress_cb is not None:
+                progress_cb(max(1, len(ops)))
+
+            dd = simulator.get_constructed_dd()
+            if want_statevector:
+                try:
+                    return np.array(dd.get_vector(), dtype=np.complex128)
+                except TimeoutError:
+                    raise
+                except Exception:
+                    LOGGER.exception("DDSIM did not provide a statevector representation.")
+                    return None
+            return dd

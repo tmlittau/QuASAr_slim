@@ -152,7 +152,11 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
 
     chains = _group_chains(ssd)
     if cfg.max_workers <= 0:
-        desired = max(1, len(chains))
+        sensitive_backends = {"sv", "dd"}
+        has_sensitive = any(
+            str((node.backend or "sv")).lower() in sensitive_backends for node in ssd.partitions
+        )
+        desired = 1 if has_sensitive else max(1, len(chains))
         if cpu_count is None:
             cfg.max_workers = desired
         else:

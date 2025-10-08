@@ -30,7 +30,7 @@ class _DummyCircuit:
         return 0
 
 
-def _make_ssd(num_partitions: int) -> SSD:
+def _make_ssd(num_partitions: int, backend: str = "sv") -> SSD:
     ssd = SSD()
     for idx in range(num_partitions):
         node = PartitionNode(
@@ -38,7 +38,7 @@ def _make_ssd(num_partitions: int) -> SSD:
             qubits=[idx],
             circuit=_DummyCircuit(1),
             metrics={"num_qubits": 1, "gate_count": 0},
-            backend="sv",
+            backend=backend,
         )
         ssd.add(node)
     return ssd
@@ -54,6 +54,29 @@ def _patch_backend_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
+    "num_partitions,cpu_count",
+    [
+        (3, 8),
+        (6, 16),
+        (12, 4),
+    ],
+)
+def test_execute_ssd_auto_workers_serialises_sensitive_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    num_partitions: int,
+    cpu_count: int,
+) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
+
+    cfg = ExecutionConfig(max_workers=0, heartbeat_sec=0.001, stuck_warn_sec=0.01)
+    ssd = _make_ssd(num_partitions)
+
+    execute_ssd(ssd, cfg)
+
+    assert cfg.max_workers == 1
+
+
+@pytest.mark.parametrize(
     "num_partitions,cpu_count,expected",
     [
         (3, 8, 3),
@@ -61,7 +84,7 @@ def _patch_backend_runner(monkeypatch: pytest.MonkeyPatch) -> None:
         (12, 4, 4),
     ],
 )
-def test_execute_ssd_auto_workers_tracks_available_parallelism(
+def test_execute_ssd_auto_workers_tracks_available_parallelism_for_tableau(
     monkeypatch: pytest.MonkeyPatch,
     num_partitions: int,
     cpu_count: int,
@@ -70,7 +93,7 @@ def test_execute_ssd_auto_workers_tracks_available_parallelism(
     monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
 
     cfg = ExecutionConfig(max_workers=0, heartbeat_sec=0.001, stuck_warn_sec=0.01)
-    ssd = _make_ssd(num_partitions)
+    ssd = _make_ssd(num_partitions, backend="tableau")
 
     execute_ssd(ssd, cfg)
 
