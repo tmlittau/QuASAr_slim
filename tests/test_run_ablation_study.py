@@ -4,12 +4,15 @@ import pathlib
 import sys
 
 import pytest
+from qiskit import QuantumCircuit
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from quasar.analyzer import analyze
+from quasar.SSD import SSD, PartitionNode
+from quasar.cost_estimator import CostEstimator
 from quasar.planner import PlannerConfig, plan
 import quasar.planner as planner_mod
 from plots import plot_ablation_bars as pab
@@ -86,3 +89,37 @@ def test_collect_variant_metrics_extracts_wall_and_memory() -> None:
     assert metrics[0].max_mem_gib == pytest.approx(2.0)
     assert metrics[1].max_mem_gib == pytest.approx(3.0)
     assert metrics[1].wall_time_estimated is True
+
+
+def test_summarise_execution_prefers_peak_rss() -> None:
+    ssd = SSD()
+    qc = QuantumCircuit(1)
+    node = PartitionNode(
+        id=0,
+        qubits=[0],
+        circuit=qc,
+        metrics={"num_qubits": 1, "num_gates": 1, "two_qubit_gates": 0},
+        backend="sv",
+    )
+    ssd.add(node)
+
+    execution = {
+        "results": [
+            {
+                "status": "ok",
+                "backend": "sv",
+                "elapsed_s": 0.1,
+                "wall_s_measured": 0.1,
+                "mem_bytes": 32,
+                "peak_rss_bytes": 10 * 1024**2,
+            }
+        ],
+        "meta": {"wall_elapsed_s": 0.1},
+    }
+
+    estimator = CostEstimator.from_planner_config(PlannerConfig())
+    summary = ras._summarise_execution(ssd, execution, estimator)
+    assert summary is not None
+    assert summary["max_mem_bytes"] == 10 * 1024**2
+    assert summary["max_mem_estimated"] is False
+    assert summary.get("max_rss_bytes") == 10 * 1024**2
