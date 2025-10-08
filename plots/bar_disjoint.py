@@ -102,8 +102,9 @@ def _extract_quasar_time(data: Dict[str, Any]) -> Optional[float]:
     quasar = (data.get("quasar") or {})
     execution = quasar.get("execution") or data.get("execution") or {}
     meta = execution.get("meta") or {}
+    max_workers = meta.get("max_workers", 1.0)
 
-    aggregated = _aggregate_partition_time(execution)
+    aggregated = _aggregate_partition_time(execution)*max_workers
     wall_meta = _safe_float(meta.get("wall_elapsed_s"))
 
     if aggregated is not None:
@@ -299,7 +300,7 @@ def _collect_case_metrics(cases: List[Dict[str, Any]]):
         params = (data.get("case") or {}).get("params", {})
         n = int(params.get("num_qubits", 0) or 0)
         k = int(params.get("num_blocks", 0) or 0)
-        labels.append(f"n={n}, k={k}")
+        labels.append(f"n={n}, blocks={k}")
 
         qt = _extract_quasar_time(data)
         quasar_times.append(qt if qt is not None else float("nan"))
@@ -433,7 +434,7 @@ def make_plot(
         )
 
     if legend_handles:
-        fig.legend(handles=legend_handles, loc="upper right")
+        fig.legend(handles=legend_handles, loc="center")
 
     fig.tight_layout(rect=[0, 0, 1, 0.94])
 
@@ -567,7 +568,7 @@ def make_memory_plot(
         )
 
     if legend_handles:
-        fig.legend(handles=legend_handles, loc="upper right")
+        fig.legend(handles=legend_handles, loc="center")
 
     fig.tight_layout(rect=[0, 0, 1, 0.94])
 
