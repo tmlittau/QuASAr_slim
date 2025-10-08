@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from quasar.analyzer import analyze
 from quasar.planner import PlannerConfig, plan
 import quasar.planner as planner_mod
-from scripts import plot_ablation_bars as pab
+from plots import plot_ablation_bars as pab
 from scripts import run_ablation_study as ras
 
 

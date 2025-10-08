@@ -7,7 +7,7 @@ memory usage – so the three planner variants can be compared side-by-side.
 
 Typical usage::
 
-    python -m scripts.plot_ablation_bars --summary path/to/results.json \
+    python -m plots.plot_ablation_bars --summary path/to/results.json \
         --output plots/ablation_bars.png
 
 The helper functions are kept lightweight so they can also be imported from
