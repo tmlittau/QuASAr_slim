@@ -5,57 +5,50 @@ import sys
 
 import pytest
 
-
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-from quasar.SSD import PartitionNode, SSD
-from quasar.planner import PlannerConfig
-from quasar.simulation_engine import ExecutionConfig
+from quasar.analyzer import analyze
+from quasar.planner import PlannerConfig, plan
+import quasar.planner as planner_mod
 from scripts import run_ablation_study as ras
 
 
-class _DummyCircuit:
-    def __init__(self, num_qubits: int) -> None:
-        self.num_qubits = num_qubits
-
-
-def test_run_variant_falls_back_to_plan_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    ssd = SSD()
-    node = PartitionNode(
-        id=0,
-        qubits=list(range(5)),
-        circuit=_DummyCircuit(5),
-        metrics={"num_qubits": 5, "num_gates": 10, "two_qubit_gates": 4},
-        backend="sv",
+def test_streamlined_hybrid_blocks_split(monkeypatch: pytest.MonkeyPatch) -> None:
+    circuit, specs = ras.build_ablation_circuit(
+        num_components=2,
+        component_size=3,
+        clifford_depth=2,
+        tail_depth=2,
+        tail_sequence=("random", "sparse"),
+        seed=7,
     )
-    ssd.add(node)
 
-    exec_payload = {
-        "results": [
-            {
-                "partition": 0,
-                "status": "estimated",
-                "backend": "sv",
-                "elapsed_s": 0.1,
-                "wall_s_measured": 0.1,
-                "mem_bytes_estimated": 123,
-            }
-        ],
-        "meta": {"wall_elapsed_s": 0.1},
-    }
+    analysis = analyze(circuit)
+    assert len(analysis.ssd.partitions) == 2
 
-    monkeypatch.setattr(ras, "plan", lambda ssd_in, cfg: ssd_in)
-    monkeypatch.setattr(ras, "_estimate_amp_ops", lambda planned, cfg: 0.0)
-    monkeypatch.setattr(ras, "execute_ssd", lambda planned, cfg: exec_payload)
+    monkeypatch.setattr(planner_mod, "stim_available", lambda: True)
+    monkeypatch.setattr(planner_mod, "ddsim_available", lambda: True)
 
-    planner_cfg = PlannerConfig(max_ram_gb=1.0)
-    exec_cfg = ExecutionConfig(max_ram_gb=1.0)
+    cfg = PlannerConfig(conv_amp_ops_factor=0.0, prefer_dd=True, hybrid_clifford_tail=True)
+    planned = plan(analysis.ssd, cfg)
 
-    result = ras._run_variant("full", ssd, planner_cfg, exec_cfg)
+    chains: dict[str, list] = {}
+    for node in planned.partitions:
+        chain_id = node.meta.get("chain_id")
+        if chain_id is None:
+            continue
+        chains.setdefault(chain_id, []).append(node)
 
-    expected_mem = ras._estimate_mem_for_backend("sv", 5)
-    assert result.peak_mem_bytes == expected_mem
-    assert result.peak_mem_estimate_bytes == 123
+    assert len(chains) == len(specs)
+
+    for spec in specs:
+        chain_id = f"p{spec.index}_hybrid"
+        assert chain_id in chains
+        nodes = sorted(chains[chain_id], key=lambda n: n.meta.get("seq_index", 0))
+        assert len(nodes) == 2
+        prefix, tail = nodes
+        assert prefix.backend == "tableau"
+        expected_tail = "sv" if spec.tail_kind == "random" else "dd"
+        assert tail.backend == expected_tail
