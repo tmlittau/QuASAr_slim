@@ -589,6 +589,11 @@ def _run_variant(
     peak_measured, peak_estimated = _extract_peak_memory(exec_payload)
     if peak_estimated is None:
         peak_estimated = peak_mem_plan
+    if peak_measured is None:
+        # Fall back to the planned peak (and only if that's unavailable, use the estimate).
+        peak_measured = (
+            peak_mem_plan if peak_mem_plan is not None else peak_estimated
+        )
 
     return VariantResult(
         name=name,
