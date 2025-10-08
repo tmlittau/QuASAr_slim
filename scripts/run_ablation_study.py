@@ -41,6 +41,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import logging
+from time import perf_counter
 import numpy as np
 from qiskit import QuantumCircuit
 
@@ -51,6 +53,9 @@ from quasar.cost_estimator import CostEstimator
 from quasar.gate_metrics import circuit_metrics
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -150,6 +155,12 @@ def build_ablation_circuit(
     if component_size <= 0:
         raise ValueError("component_size must be positive")
     total_qubits = num_components * component_size
+    logger.info(
+        "Building ablation circuit: %s components × %s qubits (total=%s)",
+        num_components,
+        component_size,
+        total_qubits,
+    )
     qc = QuantumCircuit(total_qubits)
     rng = np.random.default_rng(seed)
     blocks = _partition_qubits(total_qubits, num_components)
@@ -158,6 +169,7 @@ def build_ablation_circuit(
     sequence = tail_sequence or TAIL_SEQUENCE
     for index, block in enumerate(blocks):
         tail_kind = sequence[index % len(sequence)]
+        logger.debug("Configuring block %s on qubits %s with %s tail", index, block, tail_kind)
         _apply_clifford_prefix(qc, block, depth=clifford_depth, rng=rng)
         if tail_kind == "random":
             _apply_random_rotation_tail(qc, block, depth=tail_depth, rng=rng)
@@ -168,6 +180,7 @@ def build_ablation_circuit(
         specs.append(HybridBlockSpec(index=index, qubits=block, tail_kind=tail_kind))
 
     qc.metadata = {"hybrid_blocks": [asdict(spec) for spec in specs]}
+    logger.info("Finished circuit construction; depth=%s", qc.depth())
     return qc, specs
 
 
@@ -382,6 +395,44 @@ def _summarise_execution(
     return summary
 
 
+def _log_variant_summary(name: str, summary: Optional[Dict[str, object]]) -> None:
+    """Emit a concise INFO level summary of the execution metrics."""
+
+    if not summary:
+        logger.info("Variant '%s': no execution summary available", name)
+        return
+
+    wall = summary.get("wall_time_s")
+    if isinstance(wall, (int, float)):
+        wall_repr = f"{wall:.2f}s"
+    else:
+        wall_repr = "n/a" if wall is None else str(wall)
+
+    mem = summary.get("max_mem_bytes")
+    if isinstance(mem, (int, float)):
+        mem_repr = f"{int(mem)} bytes"
+    else:
+        mem_repr = "n/a" if mem is None else str(mem)
+
+    wall_suffix = " (estimated)" if summary.get("wall_time_estimated") else ""
+    mem_suffix = " (estimated)" if summary.get("max_mem_estimated") else ""
+
+    logger.info(
+        "Variant '%s': wall_time=%s%s, max_mem=%s%s",
+        name,
+        wall_repr,
+        wall_suffix,
+        mem_repr,
+        mem_suffix,
+    )
+
+    if summary.get("estimate_unavailable"):
+        logger.warning(
+            "Variant '%s': requested execution estimate was unavailable; timings may be incomplete",
+            name,
+        )
+
+
 def run_three_way_ablation(
     circuit: QuantumCircuit,
     *,
@@ -391,7 +442,19 @@ def run_three_way_ablation(
 ) -> Dict[str, object]:
     """Plan the circuit under three planner configurations."""
 
+    logger.info(
+        "Running three-way ablation: qubits=%s depth=%s execute=%s",
+        circuit.num_qubits,
+        circuit.depth(),
+        execute,
+    )
+    analysis_start = perf_counter()
     analysis = analyze(circuit)
+    logger.info(
+        "Completed analysis in %.2fs with %s partitions",
+        perf_counter() - analysis_start,
+        len(analysis.ssd.partitions),
+    )
     base_ssd = analysis.ssd
 
     planner_base = planner_cfg or PlannerConfig()
@@ -401,8 +464,13 @@ def run_three_way_ablation(
     estimator = CostEstimator.from_planner_config(planner_base)
     sv_seconds_per_amp: Optional[float] = None
 
+    logger.info("Planning variant 'full' (%s partitions)", len(base_ssd.partitions))
+    plan_start = perf_counter()
     planned_full = plan(base_ssd, planner_base)
+    logger.info("Finished planning variant 'full' in %.2fs", perf_counter() - plan_start)
     exec_full = execute_ssd(planned_full, exec_cfg) if execute else None
+    if execute:
+        logger.info("Executing variant 'full' with %s partitions", len(planned_full.partitions))
     fallback_time = sv_seconds_per_amp
     summary_full = _summarise_execution(planned_full, exec_full, estimator, fallback_time_per_amp=fallback_time)
     results.append(
@@ -414,14 +482,20 @@ def run_three_way_ablation(
             summary=summary_full,
         )
     )
+    _log_variant_summary("full", summary_full)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_full, exec_full, estimator)
         if ops > 0 and elapsed > 0:
             sv_seconds_per_amp = elapsed / ops
 
     merged = _collapse_to_single_partition(base_ssd, circuit)
+    logger.info("Planning variant 'no_disjoint' (forced single partition)")
+    plan_start = perf_counter()
     planned_nodisjoint = plan(merged, planner_base)
+    logger.info("Finished planning variant 'no_disjoint' in %.2fs", perf_counter() - plan_start)
     exec_nodisjoint = execute_ssd(planned_nodisjoint, exec_cfg) if execute else None
+    if execute:
+        logger.info("Executing variant 'no_disjoint' with %s partitions", len(planned_nodisjoint.partitions))
     fallback_time = sv_seconds_per_amp
     summary_nodisjoint = _summarise_execution(
         planned_nodisjoint,
@@ -439,6 +513,7 @@ def run_three_way_ablation(
             summary=summary_nodisjoint,
         )
     )
+    _log_variant_summary("no_disjoint", summary_nodisjoint)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_nodisjoint, exec_nodisjoint, estimator)
         if ops > 0 and elapsed > 0:
@@ -452,8 +527,13 @@ def run_three_way_ablation(
         conv_amp_ops_factor=planner_base.conv_amp_ops_factor,
         sv_twoq_factor=planner_base.sv_twoq_factor,
     )
+    logger.info("Planning variant 'no_hybrid'")
+    plan_start = perf_counter()
     planned_nohybrid = plan(base_ssd, nohybrid_cfg)
+    logger.info("Finished planning variant 'no_hybrid' in %.2fs", perf_counter() - plan_start)
     exec_nohybrid = execute_ssd(planned_nohybrid, exec_cfg) if execute else None
+    if execute:
+        logger.info("Executing variant 'no_hybrid' with %s partitions", len(planned_nohybrid.partitions))
     fallback_time = sv_seconds_per_amp
     summary_nohybrid = _summarise_execution(planned_nohybrid, exec_nohybrid, estimator, fallback_time_per_amp=fallback_time)
     results.append(
@@ -465,6 +545,7 @@ def run_three_way_ablation(
             summary=summary_nohybrid,
         )
     )
+    _log_variant_summary("no_hybrid", summary_nohybrid)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_nohybrid, exec_nohybrid, estimator)
         if ops > 0 and elapsed > 0:
@@ -497,6 +578,9 @@ def _parse_tail_sequence(text: Optional[str]) -> Optional[List[str]]:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--num-components", type=int, default=4, help="Number of disjoint hybrid blocks")
     parser.add_argument("--component-size", type=int, default=4, help="Number of qubits per block")
@@ -526,9 +610,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.out:
         out_path = Path(args.out).resolve()
+        logger.info("Writing ablation summary to %s", out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(summary, indent=2))
     else:
+        logger.info("Ablation summary:\n%s", json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2))
 
 
