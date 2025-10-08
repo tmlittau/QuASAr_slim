@@ -71,13 +71,17 @@ python -m scripts.run_ablation_study \
 ```
 
 The script prints the output path on success. To inspect the planner behaviour,
-open `summary.json` and look at the `variants[*].partitions` payload.
+open `summary.json` and look at the `variants[*].partitions` payload. Add
+`--max-workers <N>` to the command when you want to override the executor's
+default worker heuristic from the CLI.
 
 ### Optional: Execute the circuit
 
 By default the CLI only plans the circuit. Add `--execute` to run all three
 variants with the configured execution backend and capture wall-clock and memory
-usage.
+usage. Combine it with `--max-workers` to fan sensitive partitions out across
+several worker processes when the default limit is too strict for your
+experiment.
 
 ```bash
 python -m scripts.run_ablation_study ... --execute
@@ -126,13 +130,42 @@ custom `ExecutionConfig`) to collect runtime and memory measurements:
 ```python
 from quasar.simulation_engine import ExecutionConfig
 
-exec_cfg = ExecutionConfig(num_shots=128, profile=True)
+exec_cfg = ExecutionConfig(max_workers=4)
 summary_exec = ras.run_three_way_ablation(circuit, execute=True, exec_cfg=exec_cfg)
 ```
 
 Because the helpers operate on in-memory objects, you can rerun the cell that
 creates `circuit` with different knob values and immediately compare the new
 planner outputs—all without writing intermediate files.
+
+### Understanding the execution metrics
+
+The JSON payload surfaces the aggregated execution data produced by
+`execute_ssd`. Each variant records the global wall-clock runtime reported by
+the executor, not a sum of per-partition workers. The value comes directly from
+the `wall_elapsed_s` field that the simulation engine captures by timing the
+entire execution loop around the worker pool.【F:scripts/run_ablation_study.py†L322-L345】【F:quasar/simulation_engine.py†L187-L418】 As a result, the
+figures plot the overall elapsed time for the variant, regardless of how many
+partitions ran in parallel.
+
+When the disjoint planner creates several statevector partitions, the executor
+marks those backends as "sensitive" and restricts the worker pool to a single
+thread. In that configuration the partitions execute sequentially, so the wall
+clock in the `full` run effectively accumulates the runtime of every partition
+plus the conversion overhead between them.【F:quasar/simulation_engine.py†L187-L240】 The `no_disjoint` variant collapses the
+problem into one partition, avoiding those boundaries and reusing a single
+statevector simulation, which is why its wall time can end up lower even though
+both variants run on the same backend.【F:scripts/run_ablation_study.py†L341-L380】 The memory plot still reflects the peak usage across all
+partitions, so you can compare configurations without worrying about these
+execution-order details.
+
+The default worker pool size depends on the partition makeup: when any
+"sensitive" backend such as the statevector or decision-diagram simulator is
+present the executor forces `max_workers = 1`; otherwise it grows the pool up to
+the number of disjoint chains (bounded by the host CPU count).【F:quasar/simulation_engine.py†L187-L220】 You can override this behaviour either via the `--max-workers` CLI switch or by
+supplying an explicit `ExecutionConfig(max_workers=...)` when you call
+`run_three_way_ablation` from Python, letting you raise or lower the worker
+limit as needed.【F:scripts/run_ablation_study.py†L612-L650】【F:quasar/simulation_engine.py†L187-L220】
 
 ## 4. Validate the theoretical expectations
 
