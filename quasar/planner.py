@@ -79,8 +79,6 @@ def _build_subcircuit_like(parent, ops: List):
 def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
     if not cfg.hybrid_clifford_tail:
         return None
-    if int(node.id) % 2 == 1:
-        return None
     split = _split_at_first_nonclifford(node)
     if not split:
         return None
