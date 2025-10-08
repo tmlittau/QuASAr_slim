@@ -147,6 +147,26 @@ def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
         "sv_twoq_factor": cfg.sv_twoq_factor,
     }
     for node in ssd.partitions:
+        meta = dict(node.meta)
+        if meta.get("collapsed"):
+            new_node = PartitionNode(
+                id=node.id,
+                qubits=list(node.qubits),
+                circuit=node.circuit,
+                metrics=dict(node.metrics),
+                meta=meta,
+            )
+            forced_backend = meta.get("forced_backend")
+            if forced_backend:
+                new_node.set_backend(forced_backend)
+                reason = meta.get("forced_backend_reason") or f"forced_backend={forced_backend}"
+            else:
+                forced_backend, reason = _choose_backend(node.metrics, cfg)
+                new_node.set_backend(forced_backend)
+            new_node.meta["planner_reason"] = reason
+            annotated.add(new_node)
+            continue
+
         hybrid = _consider_hybrid(node, cfg)
         if hybrid:
             for hn in hybrid:
@@ -154,8 +174,11 @@ def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
             continue
         b, why = _choose_backend(node.metrics, cfg)
         new_node = PartitionNode(
-            id=node.id, qubits=list(node.qubits), circuit=node.circuit,
-            metrics=dict(node.metrics), meta=dict(node.meta),
+            id=node.id,
+            qubits=list(node.qubits),
+            circuit=node.circuit,
+            metrics=dict(node.metrics),
+            meta=meta,
         )
         new_node.set_backend(b)
         new_node.meta["planner_reason"] = why

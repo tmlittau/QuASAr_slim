@@ -91,6 +91,30 @@ def test_collect_variant_metrics_extracts_wall_and_memory() -> None:
     assert metrics[1].wall_time_estimated is True
 
 
+def test_no_disjoint_variant_forces_statevector(monkeypatch: pytest.MonkeyPatch) -> None:
+    circuit, _ = ras.build_ablation_circuit(
+        num_components=2,
+        component_size=3,
+        clifford_depth=1,
+        tail_depth=1,
+        tail_sequence=("random", "sparse"),
+        seed=11,
+    )
+
+    analysis = analyze(circuit)
+    collapsed = ras._collapse_to_single_partition(analysis.ssd, circuit)
+
+    monkeypatch.setattr(planner_mod, "stim_available", lambda: True)
+    monkeypatch.setattr(planner_mod, "ddsim_available", lambda: True)
+
+    planned = plan(collapsed, PlannerConfig(prefer_dd=True, hybrid_clifford_tail=True))
+
+    assert len(planned.partitions) == 1
+    node = planned.partitions[0]
+    assert node.backend == "sv"
+    assert node.meta.get("planner_reason") == "forced_single_partition"
+
+
 def test_summarise_execution_prefers_peak_rss() -> None:
     ssd = SSD()
     qc = QuantumCircuit(1)
