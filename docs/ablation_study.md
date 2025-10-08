@@ -85,6 +85,55 @@ python -m scripts.run_ablation_study ... --execute
 
 The execution results are stored under `variants[*].execution`.
 
+### Working inside a Jupyter notebook
+
+The same helpers can be imported directly for exploratory analysis. Start a
+notebook (for example with `jupyter lab`) in the repository root and use the
+module via:
+
+```python
+from scripts import run_ablation_study as ras
+
+# 1. Build the test circuit and capture the block metadata
+circuit, block_specs = ras.build_ablation_circuit(
+    num_components=3,
+    component_size=4,
+    clifford_depth=3,
+    tail_depth=3,
+    seed=11,
+)
+
+# 2. Run the three planner variants without executing the circuits
+summary = ras.run_three_way_ablation(circuit)
+
+# 3. Inspect the returned payload
+summary["analysis"], summary["variants"][0]["partitions"][:2]
+```
+
+The return value is a JSON-serialisable dictionary, so you can pretty-print it
+or convert it into a pandas `DataFrame` inside the notebook:
+
+```python
+import pandas as pd
+
+variants = pd.DataFrame(summary["variants"])  # planner metadata and partitions
+variants[["name", "planner"]]
+```
+
+Pass `execute=True` to `run_three_way_ablation` (optionally together with a
+custom `ExecutionConfig`) to collect runtime and memory measurements:
+
+```python
+from quasar.simulation_engine import ExecutionConfig
+
+exec_cfg = ExecutionConfig(num_shots=128, profile=True)
+summary_exec = ras.run_three_way_ablation(circuit, execute=True, exec_cfg=exec_cfg)
+```
+
+Because the helpers operate on in-memory objects, you can rerun the cell that
+creates `circuit` with different knob values and immediately compare the new
+planner outputs—all without writing intermediate files.
+
 ## 4. Validate the theoretical expectations
 
 A regression test ships with the repository to verify that, when conversion
