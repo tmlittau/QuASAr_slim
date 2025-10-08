@@ -228,6 +228,16 @@ class VariantRecord:
         return payload
 
 
+@dataclass
+class _PendingEstimate:
+    """Track variants waiting for a calibrated execution estimate."""
+
+    ssd: SSD
+    execution: Optional[Dict[str, object]]
+    prefer_estimate: bool
+    record: VariantRecord
+
+
 def _partition_payload(ssd: SSD) -> List[Dict[str, object]]:
     return [partition.to_dict() for partition in ssd.partitions]
 
@@ -304,6 +314,41 @@ def _variant_needs_estimate(execution: Optional[Dict[str, object]]) -> bool:
         if status in {"estimated", "error", "failed"}:
             return True
     return False
+
+
+def _refresh_pending_estimates(
+    pending: Dict[str, _PendingEstimate],
+    estimator: CostEstimator,
+    fallback_time_per_amp: Optional[float],
+) -> None:
+    """Recompute summaries whose execution estimates were deferred."""
+
+    if not pending:
+        return
+    if not fallback_time_per_amp or fallback_time_per_amp <= 0:
+        return
+
+    completed: List[str] = []
+    for name, info in pending.items():
+        summary = _summarise_execution(
+            info.ssd,
+            info.execution,
+            estimator,
+            fallback_time_per_amp=fallback_time_per_amp,
+            prefer_estimate=info.prefer_estimate,
+        )
+        if summary is None:
+            continue
+        info.record.summary = summary
+        if not summary.get("estimate_unavailable"):
+            completed.append(name)
+            logger.info(
+                "Variant '%s': retrofitted execution estimate after calibration", name
+            )
+            _log_variant_summary(name, summary)
+
+    for name in completed:
+        pending.pop(name, None)
 
 
 def _summarise_execution(
@@ -491,6 +536,7 @@ def run_three_way_ablation(
     results: List[VariantRecord] = []
     estimator = CostEstimator.from_planner_config(planner_base)
     sv_seconds_per_amp: Optional[float] = None
+    pending_estimates: Dict[str, _PendingEstimate] = {}
 
     logger.info("Planning variant 'full' (%s partitions)", len(base_ssd.partitions))
     plan_start = perf_counter()
@@ -510,11 +556,19 @@ def run_three_way_ablation(
             summary=summary_full,
         )
     )
+    if summary_full and summary_full.get("estimate_unavailable"):
+        pending_estimates["full"] = _PendingEstimate(
+            ssd=planned_full,
+            execution=exec_full,
+            prefer_estimate=_variant_needs_estimate(exec_full),
+            record=results[-1],
+        )
     _log_variant_summary("full", summary_full)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_full, exec_full, estimator)
         if ops > 0 and elapsed > 0:
             sv_seconds_per_amp = elapsed / ops
+            _refresh_pending_estimates(pending_estimates, estimator, sv_seconds_per_amp)
 
     merged = _collapse_to_single_partition(base_ssd, circuit)
     logger.info("Planning variant 'no_disjoint' (forced single partition)")
@@ -541,11 +595,19 @@ def run_three_way_ablation(
             summary=summary_nodisjoint,
         )
     )
+    if summary_nodisjoint and summary_nodisjoint.get("estimate_unavailable"):
+        pending_estimates["no_disjoint"] = _PendingEstimate(
+            ssd=planned_nodisjoint,
+            execution=exec_nodisjoint,
+            prefer_estimate=_variant_needs_estimate(exec_nodisjoint),
+            record=results[-1],
+        )
     _log_variant_summary("no_disjoint", summary_nodisjoint)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_nodisjoint, exec_nodisjoint, estimator)
         if ops > 0 and elapsed > 0:
             sv_seconds_per_amp = elapsed / ops
+            _refresh_pending_estimates(pending_estimates, estimator, sv_seconds_per_amp)
 
     nohybrid_cfg = PlannerConfig(
         max_ram_gb=planner_base.max_ram_gb,
@@ -573,11 +635,19 @@ def run_three_way_ablation(
             summary=summary_nohybrid,
         )
     )
+    if summary_nohybrid and summary_nohybrid.get("estimate_unavailable"):
+        pending_estimates["no_hybrid"] = _PendingEstimate(
+            ssd=planned_nohybrid,
+            execution=exec_nohybrid,
+            prefer_estimate=_variant_needs_estimate(exec_nohybrid),
+            record=results[-1],
+        )
     _log_variant_summary("no_hybrid", summary_nohybrid)
     if execute and sv_seconds_per_amp is None:
         ops, elapsed = _accumulate_sv_stats(planned_nohybrid, exec_nohybrid, estimator)
         if ops > 0 and elapsed > 0:
             sv_seconds_per_amp = elapsed / ops
+    _refresh_pending_estimates(pending_estimates, estimator, sv_seconds_per_amp)
 
     return {
         "circuit": {
