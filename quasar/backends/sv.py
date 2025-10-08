@@ -4,7 +4,7 @@ import logging
 from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
 try:  # pragma: no cover - fallback for stubbed qiskit in tests
     from qiskit.exceptions import QiskitError
@@ -123,6 +123,7 @@ class StatevectorBackend:
         simulator = AerSimulator(method="statevector")
         executable = qc.copy()
         executable.save_statevector()
+        executable = transpile(executable, simulator)
 
         try:
             result = simulator.run(executable, **run_args).result()

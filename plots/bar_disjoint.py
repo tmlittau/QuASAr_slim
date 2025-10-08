@@ -104,7 +104,7 @@ def _extract_quasar_time(data: Dict[str, Any]) -> Optional[float]:
     meta = execution.get("meta") or {}
     max_workers = meta.get("max_workers", 1.0)
 
-    aggregated = _aggregate_partition_time(execution)*max_workers
+    aggregated = _aggregate_partition_time(execution)
     wall_meta = _safe_float(meta.get("wall_elapsed_s"))
 
     if aggregated is not None:
