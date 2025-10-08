@@ -199,6 +199,20 @@ The helper inspects each suite directory, extracts the recorded wall-clock
 times, and writes a tidy table containing the QuASAr runtime alongside the best
 whole-circuit baseline for every case.
 
+## Streamlined ablation study
+
+The lightweight ablation workflow that stresses disjoint planning and hybrid
+Clifford-tail partitioning now lives in `scripts/run_ablation_study.py`. It
+builds a single circuit containing alternating sparse and random-rotation tails
+and evaluates three planner variants (full, no disjoint partitioning, no
+hybrid partitioning). The CLI stores the analysis, plan, and optional execution
+metrics in JSON so you can iterate on the circuit size without rerunning the
+planner manually.
+
+Step-by-step instructions—covering environment setup, circuit construction,
+command-line usage, validation tests, and plotting—are documented in
+[`docs/ablation_study.md`](ablation_study.md).
+
 ## Plotting utilities
 
 All plotters now live under `plots/`:
@@ -220,75 +234,6 @@ Each plotter accepts `--suite-dir` (directory with suite JSON files) and `--out`
 for the output image path; `bar_disjoint` additionally exposes `--memory-out`
 to render the memory comparison bars and `--log` to switch those bars to a
 logarithmic scale.
-
-## Ablation study script
-
-`scripts/run_ablation_study.py` automates the hybrid/disjoint ablation runs
-referenced in the paper. It sweeps a list of qubit counts, constructs the
-matching block-disjoint hybrid circuits, and benchmarks three QuASAr variants.
-Each generated circuit intentionally combines all optimisation opportunities
-used by QuASAr. You can select the circuit family via `--circuit`; the default
-continues to be `disjoint_preps_plus_tails` from `benchmarks.disjoint`, while
-any key registered in `benchmarks.hybrid.CIRCUIT_REGISTRY` (e.g.
-`stitched_disjoint_clifford_rot_bridge`) can be requested to stress alternating
-Clifford/rotation blocks with bridge layers forcing method conversions.
-
-- multiple disjoint qubit subsets prepared independently,
-- a Clifford-only prefix that transitions into non-Clifford (diagonal) tails,
-  and
-- sparse diagonal tails that encourage decision diagram execution when
-  available.
-
-The benchmarked variants are:
-
-- **Full QuASAr** — disjoint partitioning and hybrid tail splitting enabled
-  (baseline).
-- **No disjoint partitioning** — collapses the circuit into a single partition
-  while retaining hybrid tail handling.
-- **No hybrid splitting** — keeps the disjoint blocks but disables the hybrid
-  prefix/tail optimisation.
-
-The script writes a JSON summary plus two bar charts in the chosen output
-directory. All runtimes are reported relative to the full QuASAr baseline so
-you can read off the slowdown introduced by each ablation.
-
-Typical invocation:
-
-```bash
-python -m scripts.run_ablation_study \
-    --n 16 24 32 \
-    --num-blocks 2 \
-    --circuit stitched_disjoint_clifford_rot_bridge \
-    --depth-clifford 512 --depth-rot 128 --bridge-layers 4 \
-    --out-dir ablation_runs \
-    --json-name hybrid_disjoint_results.json \
-    --times-fig hybrid_relative_runtime.png \
-    --relative-fig hybrid_slowdown.png
-```
-
-Key flags:
-
-- `--n/--num-qubits` (**required**) lists the system sizes to sweep.
-- `--circuit` picks the builder to use. Any key from
-  `benchmarks.hybrid.CIRCUIT_REGISTRY` or the default disjoint generator is
-  accepted.
-- `--depth-clifford`, `--depth-rot`, and `--bridge-layers` parameterise the
-  stitched hybrid generator (ignored by generators that do not use them).
-- `--num-blocks`, `--tail-depth`, `--min-tail-depth`, `--angle-scale`, `--sparsity`, and
-  `--bandwidth` control the per-block diagonal tails of the disjoint generator.
-- `--seed` seeds the random angles (a deterministic progression is generated
-  when omitted).
-- Planner/baseline knobs (`--conv-factor`, `--twoq-factor`, `--max-ram-gb`,
-  `--sv-ampops-per-sec`) feed straight into the QuASAr planner and baseline
-  simulators.
-- `--out-dir`, `--json-name`, `--times-fig`, and `--relative-fig` customise the
-  artefact layout.
-
-The generated JSON contains the planner/execution payload for every variant and
-records the baseline simulator timings. The `*_relative_runtime.png` figure
-compares the absolute runtimes normalised to the QuASAr baseline, while
-`*_slowdown.png` plots the ratio between the ablated variants and the full
-workflow.
 
 ## SSD visualisation CLI
 
