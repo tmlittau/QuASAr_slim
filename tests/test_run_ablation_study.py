@@ -123,3 +123,66 @@ def test_summarise_execution_prefers_peak_rss() -> None:
     assert summary["max_mem_bytes"] == 10 * 1024**2
     assert summary["max_mem_estimated"] is False
     assert summary.get("max_rss_bytes") == 10 * 1024**2
+
+
+def test_pending_estimate_refreshed_after_calibration() -> None:
+    ssd = SSD()
+    qc = QuantumCircuit(1)
+    node = PartitionNode(
+        id=0,
+        qubits=[0],
+        circuit=qc,
+        metrics={"num_qubits": 1, "num_gates": 1, "two_qubit_gates": 0},
+        backend="sv",
+    )
+    ssd.add(node)
+
+    execution = {
+        "results": [
+            {
+                "partition": 0,
+                "status": "estimated",
+                "backend": "sv",
+                "elapsed_s": 0.05,
+                "mem_bytes_estimated": 16,
+            }
+        ],
+        "meta": {"wall_elapsed_s": 0.05},
+    }
+
+    estimator = CostEstimator.from_planner_config(PlannerConfig())
+    summary = ras._summarise_execution(
+        ssd,
+        execution,
+        estimator,
+        fallback_time_per_amp=None,
+        prefer_estimate=True,
+    )
+    assert summary is not None
+    assert summary.get("estimate_unavailable") is True
+    record = ras.VariantRecord(
+        name="pending",
+        planner=PlannerConfig(),
+        partitions=[],
+        execution=execution,
+        summary=summary,
+    )
+    pending = {
+        "pending": ras._PendingEstimate(
+            ssd=ssd,
+            execution=execution,
+            prefer_estimate=True,
+            record=record,
+        )
+    }
+
+    ras._refresh_pending_estimates(pending, estimator, fallback_time_per_amp=0.5)
+    assert "pending" not in pending
+    updated = record.summary
+    assert updated is not None
+    assert updated.get("wall_time_estimated") is True
+    assert not updated.get("estimate_unavailable", False)
+    assert pytest.approx(updated.get("wall_time_s", 0.0)) == pytest.approx(
+        updated.get("modeled_wall_time_s", 0.0)
+    )
+    assert updated.get("wall_time_s", 0.0) > summary.get("wall_time_s", 0.0)
