@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable, Iterable, Optional
 
 import numpy as np
@@ -15,6 +16,9 @@ except Exception:  # pragma: no cover - fallback when exceptions module missing
 from ._partition import Operation, extract_operations
 
 LOGGER = logging.getLogger(__name__)
+
+
+_AER_LOCK = threading.Lock()
 
 
 class StatevectorSimulationError(RuntimeError):
@@ -123,20 +127,21 @@ class StatevectorBackend:
                     f"Initial state has dimension {vec.size}, expected {expected} for {num_qubits} qubits.")
             run_args["initial_statevector"] = vec
 
-        simulator = AerSimulator(method="statevector")
-        executable = qc.copy()
-        executable.save_statevector()
-        executable = transpile(executable, simulator)
+        with _AER_LOCK:
+            simulator = AerSimulator(method="statevector")
+            executable = qc.copy()
+            executable.save_statevector()
+            executable = transpile(executable, simulator)
 
-        try:
-            result = simulator.run(executable, **run_args).result()
-        except TimeoutError:
-            # Propagate timeout so the caller can convert it into an estimate
-            raise
-        except Exception as exc:
-            msg = f"qiskit-aer execution failed: {exc}"
-            LOGGER.warning("%s", msg)
-            raise StatevectorSimulationError(msg) from exc
+            try:
+                result = simulator.run(executable, **run_args).result()
+            except TimeoutError:
+                # Propagate timeout so the caller can convert it into an estimate
+                raise
+            except Exception as exc:
+                msg = f"qiskit-aer execution failed: {exc}"
+                LOGGER.warning("%s", msg)
+                raise StatevectorSimulationError(msg) from exc
 
         errors = list(self._collect_result_errors(result))
         if errors:
