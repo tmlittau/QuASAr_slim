@@ -195,7 +195,11 @@ def _collapse_to_single_partition(ssd: SSD, circuit: QuantumCircuit) -> SSD:
             qubits=list(range(circuit.num_qubits)),
             circuit=stitched,
             metrics=metrics,
-            meta={"collapsed": True},
+            meta={
+                "collapsed": True,
+                "forced_backend": "sv",
+                "forced_backend_reason": "forced_single_partition",
+            },
         )
     )
     return merged
