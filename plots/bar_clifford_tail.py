@@ -73,12 +73,27 @@ def _flatten_baseline_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
-    for key in ("wall_s_measured", "wall_s_estimated", "elapsed_s", "time_est_sec"):
-        if key in payload and payload[key] is not None:
-            try:
-                return float(payload[key])
-            except Exception:
-                continue
+    if not isinstance(payload, dict):
+        return None
+
+    prefer_estimated = False
+    if payload.get("ok") is False:
+        prefer_estimated = True
+    elif payload.get("error") and payload.get("wall_s_estimated") is not None:
+        prefer_estimated = True
+
+    if prefer_estimated:
+        order = ["wall_s_estimated", "time_est_sec", "wall_s_measured", "elapsed_s"]
+    else:
+        order = ["wall_s_measured", "elapsed_s", "wall_s_estimated", "time_est_sec"]
+
+    for key in order:
+        if key not in payload or payload[key] is None:
+            continue
+        try:
+            return float(payload[key])
+        except Exception:
+            continue
     return None
 
 

@@ -48,7 +48,21 @@ COMPONENT_COLORS = {
 
 
 def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
-    for key in ("elapsed_s", "wall_s_measured", "wall_s_estimated"):
+    if not isinstance(payload, dict):
+        return None
+
+    prefer_estimated = False
+    if payload.get("ok") is False:
+        prefer_estimated = True
+    elif payload.get("error") and payload.get("wall_s_estimated") is not None:
+        prefer_estimated = True
+
+    if prefer_estimated:
+        order = ["wall_s_estimated", "time_est_sec", "wall_s_measured", "elapsed_s"]
+    else:
+        order = ["elapsed_s", "wall_s_measured", "wall_s_estimated", "time_est_sec"]
+
+    for key in order:
         value = payload.get(key)
         if value is None:
             continue
