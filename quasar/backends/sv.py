@@ -67,7 +67,7 @@ class StatevectorBackend:
     @staticmethod
     def _collect_result_errors(result: Any) -> Iterable[str]:
         status = getattr(result, "status", None)
-        if isinstance(status, str) and status and status.lower() not in {"success", "done"}:
+        if isinstance(status, str) and status and status.lower() not in {"success", "done", "completed"}:
             yield status.strip()
         experiments = getattr(result, "results", None)
         if isinstance(experiments, Iterable):
