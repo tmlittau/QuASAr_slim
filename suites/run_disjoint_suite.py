@@ -170,13 +170,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--n", type=int, nargs="+", required=True, help="Number of qubits to sweep")
     parser.add_argument("--blocks", "--num-blocks", type=int, nargs="+", required=True, dest="blocks", help="Block counts to sweep")
-    parser.add_argument("--block-prep", "--prep", type=str, default="mixed", dest="prep", help="Preparation routine kind")
+    parser.add_argument("--block-prep", "--prep", type=str, default="w", dest="prep", help="Preparation routine kind")
     parser.add_argument("--tail-kind", type=str, default="mixed", help="Tail circuit kind")
-    parser.add_argument("--tail-depth", type=int, default=20, help="Tail depth layers")
+    parser.add_argument("--tail-depth", type=int, default=256, help="Tail depth layers")
     parser.add_argument(
         "--min-tail-depth",
         type=int,
-        default=64,
+        default=256,
         help=(
             "Ensure each disjoint block tail has at least this many layers so the"
             " circuits remain deep enough for runtime comparisons"
