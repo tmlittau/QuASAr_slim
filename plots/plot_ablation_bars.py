@@ -20,7 +20,7 @@ import argparse
 from dataclasses import dataclass
 from itertools import cycle, islice
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 
@@ -42,11 +42,32 @@ class VariantMetrics:
 
     name: str
     wall_time_s: float
-    max_mem_gb: float
+    max_mem_bytes: int
+    wall_time_estimated: bool = False
+    max_mem_estimated: bool = False
+
+    @property
+    def max_mem_gib(self) -> float:
+        return self.max_mem_bytes / float(1024**3)
 
 
 def _as_variant_metrics(record: Dict[str, object]) -> VariantMetrics:
     name = str(record.get("name", "unknown"))
+
+    summary = record.get("summary")
+    if isinstance(summary, dict):
+        wall = float(summary.get("wall_time_s", 0.0))
+        max_mem = int(summary.get("max_mem_bytes", 0))
+        wall_est = bool(summary.get("wall_time_estimated", False))
+        mem_est = bool(summary.get("max_mem_estimated", False))
+        return VariantMetrics(
+            name=name,
+            wall_time_s=wall,
+            max_mem_bytes=max_mem,
+            wall_time_estimated=wall_est,
+            max_mem_estimated=mem_est,
+        )
+
     execution = record.get("execution")
     if not isinstance(execution, dict):
         raise ValueError(f"Variant '{name}' is missing execution data")
@@ -59,11 +80,47 @@ def _as_variant_metrics(record: Dict[str, object]) -> VariantMetrics:
         raise ValueError(f"Variant '{name}' has no execution results to summarise")
 
     max_mem_bytes = 0
+    mem_estimated = False
     for entry in results:
         if isinstance(entry, dict):
-            max_mem_bytes = max(max_mem_bytes, int(entry.get("mem_bytes", 0)))
+            mem = entry.get("mem_bytes")
+            estimated = False
+            if mem is None:
+                mem = entry.get("mem_bytes_estimated")
+                if mem is not None:
+                    estimated = True
+            if mem is None:
+                continue
+            mem_int = int(mem)
+            if mem_int > max_mem_bytes:
+                max_mem_bytes = mem_int
+                mem_estimated = estimated
 
-    return VariantMetrics(name=name, wall_time_s=wall, max_mem_gb=max_mem_bytes / (1024**3))
+    return VariantMetrics(
+        name=name,
+        wall_time_s=wall,
+        max_mem_bytes=max_mem_bytes,
+        max_mem_estimated=mem_estimated,
+    )
+
+
+def _memory_values(metrics: List[VariantMetrics]) -> Tuple[List[float], str]:
+    if not metrics:
+        return [], "GiB"
+    max_bytes = max(m.max_mem_bytes for m in metrics)
+    if max_bytes <= 0:
+        return [0.0 for _ in metrics], "GiB"
+    if max_bytes >= 1024**3:
+        divisor = float(1024**3)
+        unit = "GiB"
+    elif max_bytes >= 1024**2:
+        divisor = float(1024**2)
+        unit = "MiB"
+    else:
+        divisor = 1024.0
+        unit = "KiB"
+    values = [m.max_mem_bytes / divisor for m in metrics]
+    return values, unit
 
 
 def collect_variant_metrics(summary: Dict[str, object]) -> List[VariantMetrics]:
@@ -100,14 +157,14 @@ def plot_metrics(
 
     labels = [m.name for m in metrics]
     runtimes = [m.wall_time_s for m in metrics]
-    memories = [m.max_mem_gb for m in metrics]
+    memories, mem_unit = _memory_values(metrics)
 
     fig, (ax_runtime, ax_memory) = plt.subplots(1, 2, figsize=(10, 4))
     suptitle = title if title is not None else _DEFAULT_TITLE
     fig.suptitle(suptitle)
 
     _plot_bars(ax_runtime, labels, runtimes, title="Runtime", ylabel="Seconds")
-    _plot_bars(ax_memory, labels, memories, title="Memory", ylabel="GiB")
+    _plot_bars(ax_memory, labels, memories, title="Memory", ylabel=mem_unit)
 
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 

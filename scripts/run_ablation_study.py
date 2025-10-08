@@ -45,7 +45,9 @@ import numpy as np
 from qiskit import QuantumCircuit
 
 from quasar.SSD import PartitionNode, SSD
+from quasar.backends.sv import estimate_sv_bytes
 from quasar.analyzer import analyze
+from quasar.cost_estimator import CostEstimator
 from quasar.gate_metrics import circuit_metrics
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
@@ -192,6 +194,7 @@ class VariantRecord:
     planner: PlannerConfig
     partitions: List[Dict[str, object]]
     execution: Optional[Dict[str, object]] = None
+    summary: Optional[Dict[str, object]] = None
 
     def to_json(self) -> Dict[str, object]:
         payload = {
@@ -207,11 +210,176 @@ class VariantRecord:
         }
         if self.execution is not None:
             payload["execution"] = self.execution
+        if self.summary is not None:
+            payload["summary"] = self.summary
         return payload
 
 
 def _partition_payload(ssd: SSD) -> List[Dict[str, object]]:
     return [partition.to_dict() for partition in ssd.partitions]
+
+
+def _amp_ops_for_node(node: PartitionNode, estimator: CostEstimator) -> float:
+    metrics = node.metrics or {}
+    try:
+        n = int(metrics.get("num_qubits", 0) or 0)
+    except Exception:
+        n = 0
+    try:
+        total = int(metrics.get("num_gates", 0) or 0)
+    except Exception:
+        total = 0
+    try:
+        twoq = int(metrics.get("two_qubit_gates", 0) or 0)
+    except Exception:
+        twoq = 0
+    oneq = max(total - twoq, 0)
+    if n <= 0 or total <= 0:
+        return 0.0
+    return float(estimator.sv_cost(n=n, oneq=oneq, twoq=twoq))
+
+
+def _accumulate_sv_stats(
+    ssd: SSD, execution: Optional[Dict[str, object]], estimator: CostEstimator
+) -> Tuple[float, float]:
+    if not execution or not isinstance(execution, dict):
+        return 0.0, 0.0
+    results = execution.get("results")
+    if not isinstance(results, Iterable):
+        return 0.0, 0.0
+    lookup = {node.id: node for node in ssd.partitions}
+    total_ops = 0.0
+    total_time = 0.0
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status", "")).lower()
+        if status != "ok":
+            continue
+        backend = str(entry.get("backend", "sv")).lower()
+        if backend != "sv":
+            continue
+        pid = entry.get("partition")
+        try:
+            pid_int = int(pid)
+        except Exception:
+            continue
+        node = lookup.get(pid_int)
+        if node is None:
+            continue
+        ops = _amp_ops_for_node(node, estimator)
+        if ops <= 0:
+            continue
+        elapsed = float(entry.get("elapsed_s", 0.0))
+        if elapsed <= 0:
+            continue
+        total_ops += ops
+        total_time += elapsed
+    return total_ops, total_time
+
+
+def _variant_needs_estimate(execution: Optional[Dict[str, object]]) -> bool:
+    if not execution or not isinstance(execution, dict):
+        return False
+    results = execution.get("results")
+    if not isinstance(results, Iterable):
+        return False
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status", "")).lower()
+        if status in {"estimated", "error", "failed"}:
+            return True
+    return False
+
+
+def _summarise_execution(
+    ssd: SSD,
+    execution: Optional[Dict[str, object]],
+    estimator: CostEstimator,
+    *,
+    fallback_time_per_amp: Optional[float] = None,
+    prefer_estimate: bool = False,
+) -> Optional[Dict[str, object]]:
+    if not execution or not isinstance(execution, dict):
+        return None
+
+    results = execution.get("results")
+    if not isinstance(results, Iterable):
+        return None
+
+    meta = execution.get("meta", {})
+    try:
+        wall = float(meta.get("wall_elapsed_s", 0.0))
+    except Exception:
+        wall = 0.0
+
+    max_mem = 0
+    max_mem_estimated = False
+    used_estimated_time = False
+    any_failure = False
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
+        mem = entry.get("mem_bytes")
+        estimated_mem = False
+        if mem is None:
+            mem = entry.get("mem_bytes_estimated")
+            if mem is not None:
+                estimated_mem = True
+        if mem is not None:
+            try:
+                mem_int = int(mem)
+            except Exception:
+                mem_int = 0
+            if mem_int > max_mem:
+                max_mem = mem_int
+                max_mem_estimated = estimated_mem
+        status = str(entry.get("status", "")).lower()
+        if status in {"estimated", "error", "failed"}:
+            any_failure = True
+
+    if max_mem <= 0:
+        est_mem = 0
+        for node in ssd.partitions:
+            try:
+                n = int(node.metrics.get("num_qubits", 0) or 0)
+            except Exception:
+                n = 0
+            est_mem = max(est_mem, int(estimate_sv_bytes(n)))
+        if est_mem > 0:
+            max_mem = est_mem
+            max_mem_estimated = True
+
+    sv_amp_ops = 0.0
+    for node in ssd.partitions:
+        backend = str(node.backend or "sv").lower()
+        if backend != "sv":
+            continue
+        sv_amp_ops += _amp_ops_for_node(node, estimator)
+
+    modeled_wall = None
+    if fallback_time_per_amp and fallback_time_per_amp > 0 and sv_amp_ops > 0:
+        modeled_wall = fallback_time_per_amp * sv_amp_ops
+
+    need_estimate = prefer_estimate or any_failure
+    if need_estimate and modeled_wall is not None:
+        wall = modeled_wall
+        used_estimated_time = True
+
+    summary = {
+        "wall_time_s": wall,
+        "wall_time_estimated": used_estimated_time,
+        "max_mem_bytes": int(max_mem),
+        "max_mem_estimated": max_mem_estimated,
+    }
+    if sv_amp_ops > 0:
+        summary["sv_amp_ops"] = sv_amp_ops
+    if modeled_wall is not None:
+        summary["modeled_wall_time_s"] = modeled_wall
+    if need_estimate and not used_estimated_time:
+        summary["estimate_unavailable"] = True
+    return summary
 
 
 def run_three_way_ablation(
@@ -230,29 +398,51 @@ def run_three_way_ablation(
     exec_cfg = exec_cfg or ExecutionConfig()
 
     results: List[VariantRecord] = []
+    estimator = CostEstimator.from_planner_config(planner_base)
+    sv_seconds_per_amp: Optional[float] = None
 
     planned_full = plan(base_ssd, planner_base)
     exec_full = execute_ssd(planned_full, exec_cfg) if execute else None
+    fallback_time = sv_seconds_per_amp
+    summary_full = _summarise_execution(planned_full, exec_full, estimator, fallback_time_per_amp=fallback_time)
     results.append(
         VariantRecord(
             name="full",
             planner=planner_base,
             partitions=_partition_payload(planned_full),
             execution=exec_full,
+            summary=summary_full,
         )
     )
+    if execute and sv_seconds_per_amp is None:
+        ops, elapsed = _accumulate_sv_stats(planned_full, exec_full, estimator)
+        if ops > 0 and elapsed > 0:
+            sv_seconds_per_amp = elapsed / ops
 
     merged = _collapse_to_single_partition(base_ssd, circuit)
     planned_nodisjoint = plan(merged, planner_base)
     exec_nodisjoint = execute_ssd(planned_nodisjoint, exec_cfg) if execute else None
+    fallback_time = sv_seconds_per_amp
+    summary_nodisjoint = _summarise_execution(
+        planned_nodisjoint,
+        exec_nodisjoint,
+        estimator,
+        fallback_time_per_amp=fallback_time,
+        prefer_estimate=_variant_needs_estimate(exec_nodisjoint),
+    )
     results.append(
         VariantRecord(
             name="no_disjoint",
             planner=planner_base,
             partitions=_partition_payload(planned_nodisjoint),
             execution=exec_nodisjoint,
+            summary=summary_nodisjoint,
         )
     )
+    if execute and sv_seconds_per_amp is None:
+        ops, elapsed = _accumulate_sv_stats(planned_nodisjoint, exec_nodisjoint, estimator)
+        if ops > 0 and elapsed > 0:
+            sv_seconds_per_amp = elapsed / ops
 
     nohybrid_cfg = PlannerConfig(
         max_ram_gb=planner_base.max_ram_gb,
@@ -264,14 +454,21 @@ def run_three_way_ablation(
     )
     planned_nohybrid = plan(base_ssd, nohybrid_cfg)
     exec_nohybrid = execute_ssd(planned_nohybrid, exec_cfg) if execute else None
+    fallback_time = sv_seconds_per_amp
+    summary_nohybrid = _summarise_execution(planned_nohybrid, exec_nohybrid, estimator, fallback_time_per_amp=fallback_time)
     results.append(
         VariantRecord(
             name="no_hybrid",
             planner=nohybrid_cfg,
             partitions=_partition_payload(planned_nohybrid),
             execution=exec_nohybrid,
+            summary=summary_nohybrid,
         )
     )
+    if execute and sv_seconds_per_amp is None:
+        ops, elapsed = _accumulate_sv_stats(planned_nohybrid, exec_nohybrid, estimator)
+        if ops > 0 and elapsed > 0:
+            sv_seconds_per_amp = elapsed / ops
 
     return {
         "circuit": {

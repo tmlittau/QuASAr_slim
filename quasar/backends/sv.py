@@ -51,6 +51,9 @@ def _apply_operation(circuit: QuantumCircuit, op: Operation) -> None:
     if name == "cp":
         circuit.cp(params[0] if params else 0.0, qubits[0], qubits[1])
         return
+    if name == "crx":
+        circuit.crx(params[0] if params else 0.0, qubits[0], qubits[1])
+        return
     if name == "rzz":
         circuit.rzz(params[0] if params else 0.0, qubits[0], qubits[1])
         return
