@@ -277,20 +277,35 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
         tail_method = tail_methods[idx]
         base_method = base_methods[idx]
 
+        total_quasar = tab + conv + tail
         bottom = 0.0
         if tab > 0:
             ax.bar(0, tab, width, color=COLORS["tableau"], edgecolor=EDGE_COLOR)
             bottom += tab
         if conv > 0:
+            conv_bottom = bottom
             ax.bar(
                 0,
                 conv,
                 width,
-                bottom=bottom,
+                bottom=conv_bottom,
                 color=COLORS["conversion"],
                 edgecolor=EDGE_COLOR,
                 hatch="//",
             )
+            if total_quasar > 0:
+                percent = (conv / total_quasar) * 100.0
+                label_y = conv_bottom + (conv / 2.0)
+                label_x = width / 2.0 + 0.05
+                ax.text(
+                    label_x,
+                    label_y,
+                    f"{percent:.0f}%",
+                    ha="left",
+                    va="center",
+                    fontsize=9,
+                    color=EDGE_COLOR,
+                )
             bottom += conv
         if tail > 0:
             ax.bar(
@@ -302,7 +317,6 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
                 edgecolor=EDGE_COLOR,
             )
 
-        total_quasar = tab + conv + tail
         if total_quasar > 0 and np.isfinite(base_time) and base_time > 0:
             speedup = base_time / total_quasar
             y_offset = 0.05 * max(total_quasar, base_time)
