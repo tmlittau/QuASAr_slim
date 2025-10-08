@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Callable
-import threading, time, logging
+import threading, time, logging, sys, os
 from collections import defaultdict
 
 from .SSD import SSD, PartitionNode
@@ -12,6 +12,16 @@ from .backends.sv import (
 )
 from .backends.dd import DecisionDiagramBackend
 from .backends.tableau import TableauBackend
+
+try:  # pragma: no cover - platform dependent
+    import resource
+except Exception:  # pragma: no cover - resource may be unavailable
+    resource = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional dependency
+    import psutil
+except Exception:  # pragma: no cover - psutil not installed
+    psutil = None  # type: ignore[assignment]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +51,51 @@ class _MemGovernor:
             if self._avail > self.cap:
                 self._avail = self.cap
             self._cv.notify_all()
+
+
+_FALLBACK_PEAK_RSS = 0
+
+
+def _get_peak_rss_bytes() -> Optional[int]:
+    """Return best-effort peak resident set size in bytes."""
+
+    global _FALLBACK_PEAK_RSS
+
+    if resource is not None:  # pragma: no branch - prefer ru_maxrss when available
+        try:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            peak = getattr(usage, "ru_maxrss", None)
+        except Exception:  # pragma: no cover - defensive guard
+            peak = None
+        if peak is not None:
+            try:
+                peak_int = int(peak)
+            except Exception:  # pragma: no cover - defensive guard
+                peak_int = 0
+            if peak_int < 0:
+                peak_int = 0
+            if peak_int:
+                scale = 1024
+                if sys.platform == "darwin":
+                    scale = 1  # macOS reports bytes already
+                return peak_int * scale
+
+    if psutil is not None:  # pragma: no cover - used when resource missing
+        try:
+            rss = int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:
+            rss = 0
+        if rss > 0:
+            _FALLBACK_PEAK_RSS = max(_FALLBACK_PEAK_RSS, rss)
+            return _FALLBACK_PEAK_RSS
+
+    return None
+
+
+def _attach_peak_rss(status: Dict[str, Any]) -> None:
+    peak = _get_peak_rss_bytes()
+    if peak is not None and peak > 0:
+        status["peak_rss_bytes"] = int(peak)
 
 def _backend_runner(
     name: str,
@@ -244,6 +299,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "want_statevector": want_sv,
                         "mem_bytes": int(need),
                     }
+                    _attach_peak_rss(statuses[pid])
                 init_state = out
             except StatevectorSimulationError as exc:
                 elapsed = time.time() - start
@@ -267,6 +323,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "mem_bytes": int(need),
                         "mem_bytes_estimated": int(need),
                     }
+                    _attach_peak_rss(statuses[pid])
                 LOGGER.warning(
                     "Partition %s on backend %s fell back to estimate: %s",
                     pid,
@@ -290,6 +347,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "want_statevector": want_sv,
                         "mem_bytes": int(need),
                     }
+                    _attach_peak_rss(statuses[pid])
                 init_state = None
             finally:
                 memgov.release(need)
@@ -344,7 +402,20 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
             {"partition": pid, **st, **({"done_gates": progress.get(pid, {}).get("done", 0)} if isinstance(pid, int) else {})}
             for pid, st in sorted(((k, v) for k, v in statuses.items() if isinstance(k, int)), key=lambda kv: kv[0])
         ]
+    peak_rss = 0
+    for entry in results:
+        try:
+            val = int(entry.get("peak_rss_bytes", 0))
+        except Exception:
+            val = 0
+        if val > peak_rss:
+            peak_rss = val
     return {
         "results": results,
-        "meta": {"max_ram_gb": cfg.max_ram_gb, "max_workers": cfg.max_workers, "wall_elapsed_s": wall},
+        "meta": {
+            "max_ram_gb": cfg.max_ram_gb,
+            "max_workers": cfg.max_workers,
+            "wall_elapsed_s": wall,
+            **({"peak_rss_bytes": peak_rss} if peak_rss > 0 else {}),
+        },
     }

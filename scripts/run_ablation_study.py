@@ -329,6 +329,7 @@ def _summarise_execution(
 
     max_mem = 0
     max_mem_estimated = False
+    max_rss = 0
     used_estimated_time = False
     any_failure = False
     for entry in results:
@@ -348,9 +349,34 @@ def _summarise_execution(
             if mem_int > max_mem:
                 max_mem = mem_int
                 max_mem_estimated = estimated_mem
+        rss = entry.get("peak_rss_bytes")
+        if rss is not None:
+            try:
+                rss_int = int(rss)
+            except Exception:
+                rss_int = 0
+            if rss_int > max_rss:
+                max_rss = rss_int
         status = str(entry.get("status", "")).lower()
         if status in {"estimated", "error", "failed"}:
             any_failure = True
+
+    meta_peak = None
+    try:
+        meta_peak = meta.get("peak_rss_bytes") if isinstance(meta, dict) else None
+    except Exception:
+        meta_peak = None
+    if meta_peak is not None:
+        try:
+            peak_int = int(meta_peak)
+        except Exception:
+            peak_int = 0
+        if peak_int > max_rss:
+            max_rss = peak_int
+
+    if max_rss > max_mem:
+        max_mem = max_rss
+        max_mem_estimated = False
 
     if max_mem <= 0:
         est_mem = 0
@@ -386,6 +412,8 @@ def _summarise_execution(
         "max_mem_bytes": int(max_mem),
         "max_mem_estimated": max_mem_estimated,
     }
+    if max_rss > 0:
+        summary["max_rss_bytes"] = int(max_rss)
     if sv_amp_ops > 0:
         summary["sv_amp_ops"] = sv_amp_ops
     if modeled_wall is not None:
