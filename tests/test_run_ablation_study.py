@@ -60,21 +60,20 @@ def test_collect_variant_metrics_extracts_wall_and_memory() -> None:
         "variants": [
             {
                 "name": "full",
-                "execution": {
-                    "meta": {"wall_elapsed_s": 3.2},
-                    "results": [
-                        {"mem_bytes": 512 * 1024**2},
-                        {"mem_bytes": 2 * 1024**3},
-                    ],
+                "summary": {
+                    "wall_time_s": 3.2,
+                    "max_mem_bytes": 2 * 1024**3,
+                    "wall_time_estimated": False,
+                    "max_mem_estimated": False,
                 },
             },
             {
                 "name": "no_disjoint",
-                "execution": {
-                    "meta": {"wall_elapsed_s": 4.8},
-                    "results": [
-                        {"mem_bytes": 3 * 1024**3},
-                    ],
+                "summary": {
+                    "wall_time_s": 4.8,
+                    "max_mem_bytes": 3 * 1024**3,
+                    "wall_time_estimated": True,
+                    "max_mem_estimated": True,
                 },
             },
         ]
@@ -83,5 +82,7 @@ def test_collect_variant_metrics_extracts_wall_and_memory() -> None:
     metrics = pab.collect_variant_metrics(summary)
     assert [m.name for m in metrics] == ["full", "no_disjoint"]
     assert metrics[0].wall_time_s == pytest.approx(3.2)
-    assert metrics[0].max_mem_gb == pytest.approx(2.0)
-    assert metrics[1].max_mem_gb == pytest.approx(3.0)
+    assert metrics[0].max_mem_bytes == 2 * 1024**3
+    assert metrics[0].max_mem_gib == pytest.approx(2.0)
+    assert metrics[1].max_mem_gib == pytest.approx(3.0)
+    assert metrics[1].wall_time_estimated is True
