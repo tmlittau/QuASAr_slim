@@ -622,6 +622,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
     parser.add_argument("--seed", type=int, default=1, help="Random seed for the circuit constructor")
     parser.add_argument("--execute", action="store_true", help="Execute the planned SSDs via the simulation engine")
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of execution workers. Defaults to the executor's"
+            " backend-aware heuristic when omitted."
+        ),
+    )
     parser.add_argument("--out", type=str, default=None, help="Optional path to store the JSON summary")
     args = parser.parse_args(argv)
 
@@ -634,7 +643,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         seed=args.seed,
     )
 
-    summary = run_three_way_ablation(circuit, execute=args.execute)
+    exec_cfg = ExecutionConfig()
+    if args.max_workers is not None:
+        exec_cfg.max_workers = args.max_workers
+
+    summary = run_three_way_ablation(circuit, execute=args.execute, exec_cfg=exec_cfg)
 
     if args.out:
         out_path = Path(args.out).resolve()
