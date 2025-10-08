@@ -60,6 +60,7 @@ DISJOINT = {
     "prep":        "mixed",   # "ghz" | "w" | "mixed"
     "tail_kind":   "mixed",   # "clifford" | "diag" | "mixed" | "none"
     "tail_depth":  20,
+    "min_tail_depth": 64,
     "angle_scale": 0.10,
     "sparsity":    0.1,
     "bandwidth":   2,
@@ -288,6 +289,7 @@ def step_disjoint_fig(workdir: Path, conv_factor: float, logger: logging.Logger)
         "--prep", DISJOINT["prep"],
         "--tail-kind", DISJOINT["tail_kind"],
         "--tail-depth", str(int(DISJOINT["tail_depth"])),
+        "--min-tail-depth", str(int(DISJOINT["min_tail_depth"])),
         "--angle-scale", str(float(DISJOINT["angle_scale"])),
         "--sparsity", str(float(DISJOINT["sparsity"])),
         "--bandwidth", str(int(DISJOINT["bandwidth"])),

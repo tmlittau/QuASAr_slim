@@ -344,6 +344,8 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         runner_args.extend(["--tail-kind", args.tail_kind])
     if args.tail_depth is not None:
         runner_args.extend(["--tail-depth", str(args.tail_depth)])
+    if args.min_tail_depth is not None:
+        runner_args.extend(["--min-tail-depth", str(args.min_tail_depth)])
     if args.angle_scale is not None:
         runner_args.extend(["--angle-scale", str(args.angle_scale)])
     if args.sparsity is not None:
@@ -585,6 +587,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     disjoint.add_argument(
         "--tail-depth", type=int, default=20, help="Tail depth override (layers per block)"
+    )
+    disjoint.add_argument(
+        "--min-tail-depth",
+        type=int,
+        default=64,
+        help=(
+            "Ensure each disjoint block tail has at least this many layers so the"
+            " circuits remain deep enough for runtime comparisons"
+        ),
     )
     disjoint.add_argument(
         "--angle-scale",
