@@ -22,7 +22,14 @@ BASELINE_COLORS = {
     "tableau": PASTEL_COLORS["tableau"],
 }
 
-CASE_KIND = "disjoint_preps_plus_tails"
+DEFAULT_CASE_KIND = "disjoint_preps_plus_tails"
+BACKEND_ALIGNED_CASE_KIND = "disjoint_preps_plus_tails_backend_aligned"
+
+
+def _normalize_case_kinds(case_kinds: Optional[Iterable[str]]) -> Iterable[str]:
+    if case_kinds is None:
+        return (DEFAULT_CASE_KIND,)
+    return tuple({str(kind) for kind in case_kinds})
 
 
 def _iter_case_files(suite_dir: str) -> Iterable[str]:
@@ -36,13 +43,16 @@ def _iter_case_files(suite_dir: str) -> Iterable[str]:
         yield os.path.join(suite_dir, fn)
 
 
-def _load_cases(suite_dir: str) -> List[Dict[str, Any]]:
+def _load_cases(
+    suite_dir: str, case_kinds: Optional[Iterable[str]] = None
+) -> List[Dict[str, Any]]:
+    allowed_kinds = set(_normalize_case_kinds(case_kinds))
     cases: List[Dict[str, Any]] = []
     for path in _iter_case_files(suite_dir):
         with open(path, "r") as f:
             data = json.load(f)
         case = (data.get("case") or {})
-        if case.get("kind") == CASE_KIND:
+        if case.get("kind") in allowed_kinds:
             cases.append(data)
     def sort_key(d: Dict[str, Any]) -> Tuple[int, int]:
         params = (d.get("case") or {}).get("params", {})
@@ -322,8 +332,14 @@ def _collect_case_metrics(cases: List[Dict[str, Any]]):
     }
 
 
-def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = None) -> None:
-    cases = _load_cases(suite_dir)
+def make_plot(
+    suite_dir: str,
+    out: Optional[str] = None,
+    title: Optional[str] = None,
+    *,
+    case_kinds: Optional[Iterable[str]] = None,
+) -> None:
+    cases = _load_cases(suite_dir, case_kinds)
     if not cases:
         raise SystemExit("No matching cases found in suite_dir")
 
@@ -434,8 +450,9 @@ def make_memory_plot(
     title: Optional[str] = None,
     *,
     log_scale: bool = False,
+    case_kinds: Optional[Iterable[str]] = None,
 ) -> None:
-    cases = _load_cases(suite_dir)
+    cases = _load_cases(suite_dir, case_kinds)
     if not cases:
         raise SystemExit("No matching cases found in suite_dir")
 

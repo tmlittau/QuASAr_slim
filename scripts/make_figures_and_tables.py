@@ -318,6 +318,8 @@ def cmd_hybrid(args: argparse.Namespace) -> None:
 
 def cmd_disjoint(args: argparse.Namespace) -> None:
     from plots.bar_disjoint import (
+        BACKEND_ALIGNED_CASE_KIND,
+        DEFAULT_CASE_KIND,
         make_memory_plot as make_disjoint_memory_bars,
         make_plot as make_disjoint_bars,
     )
@@ -365,6 +367,13 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         if baseline == "tab":
             baseline = "tableau"
         runner_args.extend(["--baseline", baseline])
+    if args.backend_var:
+        runner_args.append("--backend-var")
+
+    if args.backend_var:
+        case_kinds = (BACKEND_ALIGNED_CASE_KIND,)
+    else:
+        case_kinds = (DEFAULT_CASE_KIND,)
 
     _ensure_suite(
         "run_disjoint_suite.py",
@@ -379,7 +388,12 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         return
 
     print(f"[make_figures] Building disjoint bar chart -> {out_path}")
-    make_disjoint_bars(str(suite_dir), out=str(out_path), title=args.title)
+    make_disjoint_bars(
+        str(suite_dir),
+        out=str(out_path),
+        title=args.title,
+        case_kinds=case_kinds,
+    )
 
     if out_path.suffix:
         memory_out = out_path.with_name(f"{out_path.stem}_memory{out_path.suffix}")
@@ -387,7 +401,12 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         memory_out = out_path.with_name(f"{out_path.name}_memory")
 
     print(f"[make_figures] Building disjoint memory chart -> {memory_out}")
-    make_disjoint_memory_bars(str(suite_dir), out=str(memory_out), title=args.title)
+    make_disjoint_memory_bars(
+        str(suite_dir),
+        out=str(memory_out),
+        title=args.title,
+        case_kinds=case_kinds,
+    )
 
 
 @dataclass
@@ -623,6 +642,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override the number of parallel workers when executing disjoint blocks",
+    )
+    disjoint.add_argument(
+        "--backend-var",
+        action="store_true",
+        help=(
+            "Switch to the backend-aligned circuit generator so even-indexed blocks"
+            " target the tableau backend and odd-indexed blocks target the decision"
+            " diagram backend"
+        ),
     )
     disjoint.add_argument(
         "--baseline",

@@ -7,7 +7,10 @@ import time
 import traceback
 from typing import Any, Dict, List, Tuple
 
-from benchmarks.disjoint import disjoint_preps_plus_tails
+from benchmarks.disjoint import (
+    disjoint_preps_plus_tails,
+    disjoint_preps_plus_tails_backend_aligned,
+)
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
@@ -72,8 +75,14 @@ def run_case(
     blocks: int,
 ) -> Tuple[str, Dict[str, Any]]:
     params = _build_case_params(args, n, blocks)
+    if args.backend_var:
+        builder = disjoint_preps_plus_tails_backend_aligned
+        case_kind = "disjoint_preps_plus_tails_backend_aligned"
+    else:
+        builder = disjoint_preps_plus_tails
+        case_kind = "disjoint_preps_plus_tails"
     record: Dict[str, Any] = {
-        "case": {"kind": "disjoint_preps_plus_tails", "params": params},
+        "case": {"kind": case_kind, "params": params},
         "planner": {
             "conv_factor": float(args.conv_factor),
             "twoq_factor": float(args.twoq_factor),
@@ -87,7 +96,7 @@ def run_case(
     circ = None
 
     try:
-        circ = disjoint_preps_plus_tails(**params)
+        circ = builder(**params)
     except Exception as exc:  # pragma: no cover - circuit construction failure is unlikely
         _record_error(errors, "build_circuit", exc)
 
@@ -195,6 +204,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Number of parallel workers to use for executing disjoint blocks (0 = auto)",
+    )
+    parser.add_argument(
+        "--backend-var",
+        action="store_true",
+        help=(
+            "Use the backend-aligned circuit builder that dedicates even-indexed blocks to"
+            " Clifford-only tableau partitions and odd-indexed blocks to diagonal"
+            " decision-diagram partitions"
+        ),
     )
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for circuit construction")
     parser.add_argument(
