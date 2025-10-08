@@ -65,23 +65,43 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _aggregate_partition_time(execution: Dict[str, Any]) -> Optional[float]:
+    results = execution.get("results")
+    if not isinstance(results, list):
+        return None
+
+    chain_totals: Dict[str, float] = {}
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        elapsed = _safe_float(res.get("elapsed_s"))
+        if elapsed is None:
+            elapsed = _safe_float(res.get("wall_s_measured"))
+        if elapsed is None:
+            continue
+        chain_id = str(res.get("chain_id") or "__default_chain__")
+        chain_totals[chain_id] = chain_totals.get(chain_id, 0.0) + elapsed
+
+    if not chain_totals:
+        return None
+
+    return max(chain_totals.values())
+
+
 def _extract_quasar_time(data: Dict[str, Any]) -> Optional[float]:
     quasar = (data.get("quasar") or {})
     execution = quasar.get("execution") or data.get("execution") or {}
     meta = execution.get("meta") or {}
-    t = _safe_float(meta.get("wall_elapsed_s"))
-    if t is not None:
-        return t
-    results = execution.get("results") or []
-    best: Optional[float] = None
-    if isinstance(results, list):
-        for res in results:
-            elapsed = _safe_float((res or {}).get("elapsed_s"))
-            if elapsed is None:
-                continue
-            if best is None or elapsed > best:
-                best = elapsed
-    return best
+
+    aggregated = _aggregate_partition_time(execution)
+    wall_meta = _safe_float(meta.get("wall_elapsed_s"))
+
+    if aggregated is not None:
+        if wall_meta is None:
+            return aggregated
+        return min(aggregated, wall_meta)
+
+    return wall_meta
 
 
 def _pick_elapsed(payload: Dict[str, Any]) -> Optional[float]:
