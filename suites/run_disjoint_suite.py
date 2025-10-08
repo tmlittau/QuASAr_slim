@@ -14,13 +14,23 @@ from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
 
+def _effective_tail_depth(args: argparse.Namespace) -> int:
+    """Pick a tail depth that keeps the circuit deep enough for fair timing."""
+
+    depth = int(args.tail_depth)
+    min_tail_depth = getattr(args, "min_tail_depth", None)
+    if min_tail_depth is not None:
+        depth = max(depth, int(min_tail_depth))
+    return max(0, depth)
+
+
 def _build_case_params(args: argparse.Namespace, n: int, blocks: int) -> Dict[str, Any]:
     params: Dict[str, Any] = {
         "num_qubits": int(n),
         "num_blocks": int(blocks),
         "block_prep": args.prep,
         "tail_kind": args.tail_kind,
-        "tail_depth": int(args.tail_depth),
+        "tail_depth": _effective_tail_depth(args),
         "angle_scale": float(args.angle_scale),
         "sparsity": float(args.sparsity),
         "bandwidth": int(args.bandwidth),
@@ -46,7 +56,7 @@ def _ensure_wall_time(exec_payload: Dict[str, Any], elapsed: float) -> None:
     if not isinstance(meta, dict):
         meta = {}
         exec_payload["meta"] = meta
-    meta.setdefault("wall_elapsed_s", float(elapsed))
+    meta["wall_elapsed_s"] = float(elapsed)
 
 
 def _write_case_record(out_dir: str, stem: str, record: Dict[str, Any]) -> None:
@@ -163,6 +173,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-prep", "--prep", type=str, default="mixed", dest="prep", help="Preparation routine kind")
     parser.add_argument("--tail-kind", type=str, default="mixed", help="Tail circuit kind")
     parser.add_argument("--tail-depth", type=int, default=20, help="Tail depth layers")
+    parser.add_argument(
+        "--min-tail-depth",
+        type=int,
+        default=64,
+        help=(
+            "Ensure each disjoint block tail has at least this many layers so the"
+            " circuits remain deep enough for runtime comparisons"
+        ),
+    )
     parser.add_argument("--angle-scale", type=float, default=0.1, help="Tail rotation angle scale")
     parser.add_argument("--sparsity", type=float, default=0.05, help="Tail sparsity for diagonal layers")
     parser.add_argument("--bandwidth", type=int, default=2, help="Tail bandwidth for diagonal layers")

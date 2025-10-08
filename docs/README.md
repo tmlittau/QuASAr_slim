@@ -51,7 +51,7 @@ JSON files and an `index.json` summary. Example usage:
 python suites/run_hybrid_suite.py --out-dir suite_hybrid --num-qubits 24 28 --block-size 8
 python suites/run_dd_friendly_suite.py --out-dir suite_dd --n 16 24 32 --depth 100 200
 python suites/run_disjoint_suite.py --out-dir suite_disjoint --n 32 48 --blocks 2 4 \
-    --prep mixed --tail-kind mixed --tail-depth 20
+    --prep mixed --tail-kind mixed --tail-depth 20 --min-tail-depth 64
 ```
 
 All suites accept planner controls (`--conv-factor`, `--twoq-factor`,
@@ -128,6 +128,7 @@ python scripts/make_figures_and_tables.py disjoint \
     --prep mixed \
     --tail-kind mixed \
     --tail-depth 20 \
+    --min-tail-depth 64 \
     --angle-scale 0.1 \
     --sparsity 0.05 \
     --bandwidth 2 \
@@ -145,6 +146,7 @@ python scripts/make_figures_and_tables.py disjoint \
     --prep mixed \
     --tail-kind mixed \
     --tail-depth 10 \
+    --min-tail-depth 64 \
     --angle-scale 0.1 \
     --sparsity 0.05 \
     --bandwidth 2 \
@@ -153,6 +155,10 @@ python scripts/make_figures_and_tables.py disjoint \
     --out plots/disjoint_sanity.png
 ```
 
+The disjoint runner enforces a minimum tail depth of 64 layers per block via
+`--min-tail-depth` so that shallow tails do not skew runtime comparisons. Lower
+this value if you intentionally want to profile smaller, faster circuits.
+
 Key options:
 
 - `--prep` selects the per-block preparation routine (`ghz`, `w`, or `mixed` to
@@ -160,8 +166,9 @@ Key options:
 - `--tail-kind` chooses the tail circuit (`clifford`, `diag`, `mixed`, or
   `none`). The default `mixed` alternates Clifford layers with random diagonal
   rotations so you capture the mixed Clifford + rotation-tail experiment.
-- `--tail-depth`, `--angle-scale`, `--sparsity`, and `--bandwidth` refine the
-  diagonal tail shape when present.
+- `--tail-depth`, `--min-tail-depth`, `--angle-scale`, `--sparsity`, and `--bandwidth` refine the
+  diagonal tail shape when present. The default minimum tail depth of 64 layers
+  keeps disjoint circuits deep enough for fair runtime comparisons.
 - `--timeout` mirrors the hybrid workflow and stops the suite if it runs longer
   than the configured limit.
 - As with the hybrid workflow, planner and baseline tuning flags are passed
@@ -261,7 +268,7 @@ Key flags:
   accepted.
 - `--depth-clifford`, `--depth-rot`, and `--bridge-layers` parameterise the
   stitched hybrid generator (ignored by generators that do not use them).
-- `--num-blocks`, `--tail-depth`, `--angle-scale`, `--sparsity`, and
+- `--num-blocks`, `--tail-depth`, `--min-tail-depth`, `--angle-scale`, `--sparsity`, and
   `--bandwidth` control the per-block diagonal tails of the disjoint generator.
 - `--seed` seeds the random angles (a deterministic progression is generated
   when omitted).
