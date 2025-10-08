@@ -136,13 +136,40 @@ def _diag_tail_layer(
         qc.cz(a, b)
 
 
+def _random_tail_layer(
+    qc: QuantumCircuit,
+    block: list[int],
+    rng: np.random.Generator,
+    *,
+    angle_scale: float,
+) -> None:
+    """Apply a dense layer of random single- and two-qubit rotations."""
+
+    if not block:
+        return
+
+    for qubit in block:
+        theta = float(rng.uniform(-angle_scale, angle_scale))
+        phi = float(rng.uniform(-angle_scale, angle_scale))
+        lam = float(rng.uniform(-angle_scale, angle_scale))
+        qc.u(theta, phi, lam, qubit)
+
+    shuffled = block.copy()
+    rng.shuffle(shuffled)
+    for a, b in zip(shuffled[::2], shuffled[1::2]):
+        if rng.random() < 0.5:
+            qc.cx(a, b)
+        else:
+            qc.cz(a, b)
+
+
 def disjoint_preps_plus_tails(
     *,
     num_qubits: int,
     num_blocks: int,
-    block_prep: str = "mixed",
+    block_prep: str = "w",
     tail_kind: str = "mixed",
-    tail_depth: int = 20,
+    tail_depth: int = 256,
     angle_scale: float = 0.1,
     sparsity: float = 0.05,
     bandwidth: int = 2,
@@ -162,7 +189,7 @@ def disjoint_preps_plus_tails(
         raise ValueError(f"Unsupported block_prep '{block_prep}'")
 
     tail_kind = tail_kind.lower()
-    if tail_kind not in {"clifford", "diag", "hybrid", "none", "mixed"}:
+    if tail_kind not in {"clifford", "diag", "hybrid", "none", "mixed", "random"}:
         raise ValueError(f"Unsupported tail_kind '{tail_kind}'")
 
     rng = np.random.default_rng(seed)
@@ -190,7 +217,8 @@ def disjoint_preps_plus_tails(
     tail_choices = []
     for index in range(num_blocks):
         if tail_kind == "mixed":
-            tail_choices.append("clifford" if index % 2 == 0 else "diag")
+            options = ("clifford", "diag", "random")
+            tail_choices.append(options[index % len(options)])
         else:
             tail_choices.append(tail_kind)
 
@@ -234,6 +262,13 @@ def disjoint_preps_plus_tails(
                     angle_scale=angle_scale,
                     sparsity=sparsity,
                     bandwidth=bandwidth,
+                )
+            elif tail == "random":
+                _random_tail_layer(
+                    qc,
+                    block,
+                    rng,
+                    angle_scale=angle_scale,
                 )
             else:
                 raise ValueError(

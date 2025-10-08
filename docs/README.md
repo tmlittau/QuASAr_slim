@@ -37,7 +37,7 @@ Circuit generators live under `benchmarks/`:
 - `benchmarks.dd_friendly` — line-graph Clifford prefixes with sparse diagonal
 tails optimised for decision-diagram simulators.
 - `benchmarks.disjoint` — block-disjoint preparation + tail families with
-  configurable GHZ/W prep and Clifford/diagonal tails. Blocks are constructed
+  configurable GHZ/W prep and Clifford/diagonal/random tails. Blocks are constructed
   without cross-couplings so they can be simulated in parallel.
 - `benchmarks.__init__` — registry aggregator. Import
   `from benchmarks import build` to fetch any circuit by name.
@@ -51,15 +51,15 @@ JSON files and an `index.json` summary. Example usage:
 python suites/run_hybrid_suite.py --out-dir suite_hybrid --num-qubits 24 28 --block-size 8
 python suites/run_dd_friendly_suite.py --out-dir suite_dd --n 16 24 32 --depth 100 200
 python suites/run_disjoint_suite.py --out-dir suite_disjoint --n 32 48 --blocks 2 4 \
-    --prep mixed --tail-kind mixed --tail-depth 20 --min-tail-depth 64
+    --prep mixed --tail-kind mixed --tail-depth 256 --min-tail-depth 256
 ```
 
 All suites accept planner controls (`--conv-factor`, `--twoq-factor`,
 `--max-ram-gb`) and emit the QuASAr analysis, plan, execution payload, and
-baseline measurements per circuit. The disjoint sweep further allows tuning the
-block preparation (`--prep`), tail type (`--tail-kind`), and per-block tail
-depth/angles so you can probe GHZ or W structures with optional Clifford or
-diagonal tails.
+ baseline measurements per circuit. The disjoint sweep further allows tuning the
+ block preparation (`--prep`), tail type (`--tail-kind`), and per-block tail
+ depth/angles so you can probe GHZ or W structures with optional Clifford,
+ diagonal, or random tails.
 
 ### Figure and table pipeline
 
@@ -117,7 +117,7 @@ Useful flags:
 #### Disjoint benchmark (parallel sub-circuits)
 
 The `disjoint` sub-command covers the multi-block disjoint circuits with optional
-Clifford/diagonal (random-rotation) tails and emits the QuASAr vs baseline bar
+Clifford/diagonal/random tails and emits the QuASAr vs baseline bar
 chart:
 
 ```bash
@@ -127,8 +127,8 @@ python scripts/make_figures_and_tables.py disjoint \
     --blocks 2 4 \
     --prep mixed \
     --tail-kind mixed \
-    --tail-depth 20 \
-    --min-tail-depth 64 \
+    --tail-depth 256 \
+    --min-tail-depth 256 \
     --angle-scale 0.1 \
     --sparsity 0.05 \
     --bandwidth 2 \
@@ -145,8 +145,8 @@ python scripts/make_figures_and_tables.py disjoint \
     --blocks 2 \
     --prep mixed \
     --tail-kind mixed \
-    --tail-depth 10 \
-    --min-tail-depth 64 \
+    --tail-depth 128 \
+    --min-tail-depth 256 \
     --angle-scale 0.1 \
     --sparsity 0.05 \
     --bandwidth 2 \
@@ -155,20 +155,21 @@ python scripts/make_figures_and_tables.py disjoint \
     --out plots/disjoint_sanity.png
 ```
 
-The disjoint runner enforces a minimum tail depth of 64 layers per block via
+The disjoint runner enforces a minimum tail depth of 256 layers per block via
 `--min-tail-depth` so that shallow tails do not skew runtime comparisons. Lower
 this value if you intentionally want to profile smaller, faster circuits.
 
 Key options:
 
 - `--prep` selects the per-block preparation routine (`ghz`, `w`, or `mixed` to
-  alternate them).
-- `--tail-kind` chooses the tail circuit (`clifford`, `diag`, `mixed`, or
-  `none`). The default `mixed` alternates Clifford layers with random diagonal
-  rotations so you capture the mixed Clifford + rotation-tail experiment.
+  alternate them). The CLI now defaults to `w` so you get W-state blocks out of
+  the box.
+- `--tail-kind` chooses the tail circuit (`clifford`, `diag`, `random`, `mixed`,
+  or `none`). The default `mixed` cycles through Clifford, diagonal, and random
+  layers so you capture a broader variety of post-preparation behaviour.
 - `--tail-depth`, `--min-tail-depth`, `--angle-scale`, `--sparsity`, and `--bandwidth` refine the
-  diagonal tail shape when present. The default minimum tail depth of 64 layers
-  keeps disjoint circuits deep enough for fair runtime comparisons.
+  diagonal or random tail shape when present. The default minimum tail depth of
+  256 layers keeps disjoint circuits deep enough for fair runtime comparisons.
 - `--timeout` mirrors the hybrid workflow and stops the suite if it runs longer
   than the configured limit.
 - As with the hybrid workflow, planner and baseline tuning flags are passed
