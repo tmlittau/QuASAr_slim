@@ -365,6 +365,8 @@ def cmd_disjoint(args: argparse.Namespace) -> None:
         if baseline == "tab":
             baseline = "tableau"
         runner_args.extend(["--baseline", baseline])
+    if args.backend_var:
+        runner_args.append("--backend-var")
 
     _ensure_suite(
         "run_disjoint_suite.py",
@@ -623,6 +625,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Override the number of parallel workers when executing disjoint blocks",
+    )
+    disjoint.add_argument(
+        "--backend-var",
+        action="store_true",
+        help=(
+            "Switch to the backend-aligned circuit generator so even-indexed blocks"
+            " target the tableau backend and odd-indexed blocks target the decision"
+            " diagram backend"
+        ),
     )
     disjoint.add_argument(
         "--baseline",

@@ -8,7 +8,12 @@ from typing import Any, Dict
 import numpy as np
 from qiskit import QuantumCircuit
 
-__all__ = ["disjoint_preps_plus_tails", "CIRCUIT_REGISTRY", "build"]
+__all__ = [
+    "disjoint_preps_plus_tails",
+    "disjoint_preps_plus_tails_backend_aligned",
+    "CIRCUIT_REGISTRY",
+    "build",
+]
 
 
 def _apply_ry_via_rz_h(qc: QuantumCircuit, qubit: int, theta: float) -> None:
@@ -163,20 +168,9 @@ def _random_tail_layer(
             qc.cz(a, b)
 
 
-def disjoint_preps_plus_tails(
-    *,
-    num_qubits: int,
-    num_blocks: int,
-    block_prep: str = "w",
-    tail_kind: str = "mixed",
-    tail_depth: int = 256,
-    angle_scale: float = 0.1,
-    sparsity: float = 0.05,
-    bandwidth: int = 2,
-    seed: int = 7,
-) -> QuantumCircuit:
-    """Build a block-disjoint circuit with configurable preparations and tails."""
-
+def _normalize_block_config(
+    num_qubits: int, num_blocks: int, block_prep: str, tail_kind: str
+) -> tuple[str, str]:
     if num_qubits <= 0:
         raise ValueError("num_qubits must be positive")
     if num_blocks <= 0:
@@ -192,9 +186,10 @@ def disjoint_preps_plus_tails(
     if tail_kind not in {"clifford", "diag", "hybrid", "none", "mixed", "random"}:
         raise ValueError(f"Unsupported tail_kind '{tail_kind}'")
 
-    rng = np.random.default_rng(seed)
-    qc = QuantumCircuit(num_qubits)
+    return block_prep, tail_kind
 
+
+def _partition_qubits(num_qubits: int, num_blocks: int) -> list[list[int]]:
     base = num_qubits // num_blocks
     remainder = num_qubits % num_blocks
     blocks: list[list[int]] = []
@@ -206,6 +201,101 @@ def disjoint_preps_plus_tails(
             raise ValueError("Encountered empty block; check num_qubits/num_blocks")
         blocks.append(block)
         start += size
+    return blocks
+
+
+def _apply_tail_sequence(
+    qc: QuantumCircuit,
+    block: list[int],
+    tail: str,
+    rng: np.random.Generator,
+    *,
+    tail_depth: int,
+    angle_scale: float,
+    sparsity: float,
+    bandwidth: int,
+) -> None:
+    if tail == "none" or tail_depth <= 0:
+        return
+    if tail == "hybrid":
+        cliff_depth = max(1, tail_depth // 3)
+        for _ in range(cliff_depth):
+            _sparse_cz_layer(
+                qc,
+                block,
+                rng,
+                bandwidth=bandwidth,
+                density=min(0.5, sparsity + 0.1),
+            )
+        for _ in range(tail_depth):
+            _diag_tail_layer(
+                qc,
+                block,
+                rng,
+                angle_scale=angle_scale,
+                sparsity=sparsity,
+                bandwidth=bandwidth,
+            )
+        return
+
+    for _ in range(tail_depth):
+        if tail == "clifford":
+            _clifford_tail_layer(qc, block, rng)
+        elif tail == "diag":
+            _diag_tail_layer(
+                qc,
+                block,
+                rng,
+                angle_scale=angle_scale,
+                sparsity=sparsity,
+                bandwidth=bandwidth,
+            )
+        elif tail == "random":
+            _random_tail_layer(
+                qc,
+                block,
+                rng,
+                angle_scale=angle_scale,
+            )
+        else:
+            raise ValueError(f"Unexpected tail kind '{tail}' after normalization")
+
+
+def _tableau_dd_partition(num_blocks: int) -> tuple[set[int], set[int]]:
+    tableau_indices: set[int] = set()
+    dd_indices: set[int] = set()
+    for index in range(num_blocks):
+        if index % 2 == 0:
+            tableau_indices.add(index)
+        else:
+            dd_indices.add(index)
+    if not dd_indices and num_blocks > 1:
+        promoted = max(tableau_indices)
+        tableau_indices.remove(promoted)
+        dd_indices.add(promoted)
+    return tableau_indices, dd_indices
+
+
+def disjoint_preps_plus_tails(
+    *,
+    num_qubits: int,
+    num_blocks: int,
+    block_prep: str = "w",
+    tail_kind: str = "mixed",
+    tail_depth: int = 256,
+    angle_scale: float = 0.1,
+    sparsity: float = 0.05,
+    bandwidth: int = 2,
+    seed: int = 7,
+) -> QuantumCircuit:
+    """Build a block-disjoint circuit with configurable preparations and tails."""
+
+    block_prep, tail_kind = _normalize_block_config(
+        num_qubits, num_blocks, block_prep, tail_kind
+    )
+    rng = np.random.default_rng(seed)
+    qc = QuantumCircuit(num_qubits)
+    blocks = _partition_qubits(num_qubits, num_blocks)
 
     prep_choices = []
     for index in range(num_blocks):
@@ -228,58 +318,97 @@ def disjoint_preps_plus_tails(
         else:
             _prepare_w_block(qc, block)
 
-        tail = tail_choices[index]
-        if tail == "none" or tail_depth <= 0:
-            continue
-        if tail == "hybrid":
-            cliff_depth = max(1, tail_depth // 3)
-            for _ in range(cliff_depth):
-                _sparse_cz_layer(
-                    qc,
-                    block,
-                    rng,
-                    bandwidth=bandwidth,
-                    density=min(0.5, sparsity + 0.1),
-                )
-            for _ in range(tail_depth):
-                _diag_tail_layer(
-                    qc,
-                    block,
-                    rng,
-                    angle_scale=angle_scale,
-                    sparsity=sparsity,
-                    bandwidth=bandwidth,
-                )
-            continue
-        for _ in range(tail_depth):
-            if tail == "clifford":
-                _clifford_tail_layer(qc, block, rng)
-            elif tail == "diag":
-                _diag_tail_layer(
-                    qc,
-                    block,
-                    rng,
-                    angle_scale=angle_scale,
-                    sparsity=sparsity,
-                    bandwidth=bandwidth,
-                )
-            elif tail == "random":
-                _random_tail_layer(
-                    qc,
-                    block,
-                    rng,
-                    angle_scale=angle_scale,
-                )
+        _apply_tail_sequence(
+            qc,
+            block,
+            tail_choices[index],
+            rng,
+            tail_depth=tail_depth,
+            angle_scale=angle_scale,
+            sparsity=sparsity,
+            bandwidth=bandwidth,
+        )
+
+    return qc
+
+
+def disjoint_preps_plus_tails_backend_aligned(
+    *,
+    num_qubits: int,
+    num_blocks: int,
+    block_prep: str = "w",
+    tail_kind: str = "mixed",
+    tail_depth: int = 256,
+    angle_scale: float = 0.1,
+    sparsity: float = 0.05,
+    bandwidth: int = 2,
+    seed: int = 7,
+) -> QuantumCircuit:
+    """Build disjoint blocks tailored for tableau and decision-diagram backends.
+
+    Blocks are partitioned so that even-indexed blocks (tableau set) contain only
+    Clifford operations, while odd-indexed blocks (decision-diagram set) receive
+    diagonal tails. When only a single block is requested the circuit reduces to
+    the tableau configuration. Explicit preparation choices continue to apply to
+    decision-diagram blocks, while tableau blocks are kept in the GHZ+Clifford
+    regime to remain compatible with the tableau backend.
+    """
+
+    block_prep, tail_kind = _normalize_block_config(
+        num_qubits, num_blocks, block_prep, tail_kind
+    )
+    rng = np.random.default_rng(seed)
+    qc = QuantumCircuit(num_qubits)
+    blocks = _partition_qubits(num_qubits, num_blocks)
+    tableau_indices, _ = _tableau_dd_partition(num_blocks)
+
+    prep_choices = []
+    for index in range(num_blocks):
+        if block_prep == "mixed":
+            if index in tableau_indices:
+                prep_choices.append("ghz")
             else:
-                raise ValueError(
-                    f"Unexpected tail kind '{tail}' after normalization"
-                )
+                prep_choices.append("w")
+        else:
+            prep_choices.append(block_prep)
+
+    tail_choices = []
+    for index in range(num_blocks):
+        if tail_kind == "mixed":
+            if index in tableau_indices:
+                tail_choices.append("clifford")
+            else:
+                tail_choices.append("diag")
+        else:
+            tail_choices.append(tail_kind)
+
+    for index, block in enumerate(blocks):
+        if index in tableau_indices:
+            _prepare_ghz_block(qc, block)
+        else:
+            choice = prep_choices[index]
+            if choice == "ghz":
+                _prepare_ghz_block(qc, block)
+            else:
+                _prepare_w_block(qc, block)
+
+        _apply_tail_sequence(
+            qc,
+            block,
+            tail_choices[index],
+            rng,
+            tail_depth=tail_depth,
+            angle_scale=angle_scale,
+            sparsity=sparsity,
+            bandwidth=bandwidth,
+        )
 
     return qc
 
 
 CIRCUIT_REGISTRY: Dict[str, Any] = {
     "disjoint_preps_plus_tails": disjoint_preps_plus_tails,
+    "disjoint_preps_plus_tails_backend_aligned": disjoint_preps_plus_tails_backend_aligned,
 }
 
 

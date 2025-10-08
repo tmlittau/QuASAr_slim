@@ -38,7 +38,9 @@ Circuit generators live under `benchmarks/`:
 tails optimised for decision-diagram simulators.
 - `benchmarks.disjoint` — block-disjoint preparation + tail families with
   configurable GHZ/W prep and Clifford/diagonal/random tails. Blocks are constructed
-  without cross-couplings so they can be simulated in parallel.
+  without cross-couplings so they can be simulated in parallel. A backend-aligned
+  builder is also available to dedicate even/odd blocks to tableau and decision-diagram
+  partitions respectively.
 - `benchmarks.__init__` — registry aggregator. Import
   `from benchmarks import build` to fetch any circuit by name.
 
@@ -176,6 +178,9 @@ Key options:
   through to `suites/run_disjoint_suite.py`.
 - `--parallel-workers` controls how many worker processes QuASAr should use
   when executing disjoint blocks in parallel (defaults to an automatic choice).
+- `--backend-var` switches to the backend-aligned circuit generator so even-indexed
+  blocks stay Clifford-only for the tableau backend while odd-indexed blocks keep
+  diagonal tails for the decision-diagram backend.
 - `--baseline` limits the baseline comparison to a single backend. Accepts
   `tableau`/`tab`, `sv`, or `dd` and is forwarded to the suite runner.
 
