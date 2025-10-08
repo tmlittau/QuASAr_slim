@@ -18,11 +18,23 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from itertools import cycle, islice
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 import matplotlib.pyplot as plt
 
+
+_PASTEL_PALETTE = [
+    "#a6cee3",  # pastel blue
+    "#b2df8a",  # pastel green
+    "#fb9a99",  # pastel red
+    "#fdbf6f",  # pastel orange
+    "#cab2d6",  # pastel purple
+    "#ffffb3",  # pastel yellow
+]
+
+_DEFAULT_TITLE = "QuASAr ablation study"
 
 @dataclass(frozen=True)
 class VariantMetrics:
@@ -72,7 +84,8 @@ def collect_variant_metrics(summary: Dict[str, object]) -> List[VariantMetrics]:
 
 
 def _plot_bars(ax, labels: List[str], values: List[float], *, title: str, ylabel: str) -> None:
-    ax.bar(labels, values, color=["#377eb8", "#4daf4a", "#e41a1c"][: len(values)])
+    colors = list(islice(cycle(_PASTEL_PALETTE), len(values)))
+    ax.bar(labels, values, color=colors, edgecolor="white", linewidth=0.8)
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.set_ylim(bottom=0)
@@ -80,7 +93,9 @@ def _plot_bars(ax, labels: List[str], values: List[float], *, title: str, ylabel
         ax.text(idx, value, f"{value:.2f}", ha="center", va="bottom")
 
 
-def plot_metrics(metrics: List[VariantMetrics], *, output: Optional[Path] = None, title: Optional[str] = None) -> None:
+def plot_metrics(
+    metrics: List[VariantMetrics], *, output: Optional[Path] = None, title: Optional[str] = None
+) -> None:
     """Render the runtime and memory bar charts for the provided metrics."""
 
     labels = [m.name for m in metrics]
@@ -88,13 +103,13 @@ def plot_metrics(metrics: List[VariantMetrics], *, output: Optional[Path] = None
     memories = [m.max_mem_gb for m in metrics]
 
     fig, (ax_runtime, ax_memory) = plt.subplots(1, 2, figsize=(10, 4))
-    if title:
-        fig.suptitle(title)
+    suptitle = title if title is not None else _DEFAULT_TITLE
+    fig.suptitle(suptitle)
 
     _plot_bars(ax_runtime, labels, runtimes, title="Runtime", ylabel="Seconds")
     _plot_bars(ax_memory, labels, memories, title="Memory", ylabel="GiB")
 
-    fig.tight_layout(rect=(0, 0, 1, 0.95) if title else None)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
 
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -116,7 +131,12 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--summary", type=Path, required=True, help="Path to the JSON summary produced by run_ablation_study")
     parser.add_argument("--output", type=Path, default=None, help="Where to save the generated plot. Defaults to showing it interactively.")
-    parser.add_argument("--title", type=str, default=None, help="Optional title displayed above the plots")
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help=f"Optional title displayed above the plots (defaults to '{_DEFAULT_TITLE}')",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     summary = _load_summary(args.summary)
