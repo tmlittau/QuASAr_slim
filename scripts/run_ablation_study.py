@@ -49,7 +49,6 @@ from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
 from quasar.SSD import SSD, PartitionNode
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
-from quasar.backends.dd import ddsim_available
 from quasar.backends.sv import estimate_sv_bytes
 from quasar.backends.tableau import stim_available
 from quasar.cost_estimator import CostEstimator
@@ -335,16 +334,22 @@ def _build_ablation_circuit(
         start += size
 
     per_block_depth = max(3, tail_depth // 2)
+    tail_styles = ("clifford", "diag", "general")
+    has_general_tail = False
     for index, block in enumerate(blocks):
+        style = tail_styles[index % len(tail_styles)]
+        if index == len(blocks) - 1 and not has_general_tail:
+            style = "general"
+
         for _ in range(per_block_depth):
-            if index % 2 == 0:
+            if style == "clifford":
                 for qubit in block:
                     getattr(qc, rng.choice(clifford_oneq))(qubit)
                 shuffled = block.copy()
                 rng.shuffle(shuffled)
                 for a, b in zip(shuffled[::2], shuffled[1::2]):
                     getattr(qc, rng.choice(clifford_twoq))(a, b)
-            else:
+            elif style == "diag":
                 for qubit in block:
                     theta = float(rng.uniform(-angle_scale, angle_scale))
                     qc.rz(theta, qubit)
@@ -352,6 +357,19 @@ def _build_ablation_circuit(
                 rng.shuffle(shuffled)
                 for a, b in zip(shuffled[::2], shuffled[1::2]):
                     qc.cz(a, b)
+            else:  # style == "general"
+                has_general_tail = True
+                for qubit in block:
+                    theta = float(rng.uniform(-angle_scale, angle_scale))
+                    phi = float(rng.uniform(-angle_scale, angle_scale))
+                    qc.rx(theta, qubit)
+                    qc.ry(phi, qubit)
+                shuffled = block.copy()
+                rng.shuffle(shuffled)
+                for a, b in zip(shuffled[::2], shuffled[1::2]):
+                    qc.cx(a, b)
+                    lam = float(rng.uniform(-angle_scale, angle_scale))
+                    qc.crx(lam, a, b)
         qc.barrier(*block)
 
     return qc
@@ -400,8 +418,6 @@ def _validate_plan_features(plan: MutableMapping[str, Any]) -> None:
         missing.append("sv")
     if stim_available() and backend_counts.get("tableau", 0) == 0:
         missing.append("tableau")
-    if ddsim_available() and backend_counts.get("dd", 0) == 0:
-        missing.append("dd")
     if missing:
         raise PlanValidationError(
             "Expected the ablation circuit to exercise the following backends "
