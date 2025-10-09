@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 import threading, time, logging, sys, os
 from collections import defaultdict
 
@@ -229,7 +229,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     # per-partition progress counters
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
 
-    cache_entries: Dict[str, _CacheEntry] = {}
+    cache_entries: Dict[Tuple[str, str, bool], _CacheEntry] = {}
     cache_lock = threading.Lock()
 
     chains = _group_chains(ssd)
@@ -261,15 +261,33 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
             pid = node.id
             n = int(node.metrics.get("num_qubits", 0))
 
+            backend_name = (node.backend or "sv").lower()
+
+            # Lookahead: decide whether we must materialize an SV at the end of this node.
+            next_backend = None
+            if idx + 1 < len(nodes):
+                try:
+                    next_backend = (nodes[idx + 1].backend or "sv").lower()
+                except Exception:
+                    next_backend = None
+            want_sv = backend_name == "sv"
+            if backend_name == "tableau":
+                if next_backend == "sv":
+                    want_sv = True
+                elif next_backend == "dd" and not cfg.direct_tab_to_dd:
+                    want_sv = True
+
             cache_key = node.meta.get("cache_key") if node.meta else None
+            cache_lookup_key = None
             cache_entry: Optional[_CacheEntry] = None
             is_cache_owner = False
             if cache_key:
+                cache_lookup_key = (cache_key, backend_name, bool(want_sv))
                 with cache_lock:
-                    entry = cache_entries.get(cache_key)
+                    entry = cache_entries.get(cache_lookup_key)
                     if entry is None:
                         cache_entry = _CacheEntry(owner_id=pid)
-                        cache_entries[cache_key] = cache_entry
+                        cache_entries[cache_lookup_key] = cache_entry
                         is_cache_owner = True
                     else:
                         cache_entry = entry
@@ -319,20 +337,6 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     _attach_peak_rss(statuses[pid])
                 init_state = _clone_statevector(cached_output)
                 continue
-
-            # Lookahead: decide whether we must materialize an SV at the end of this node.
-            next_backend = None
-            if idx + 1 < len(nodes):
-                try:
-                    next_backend = (nodes[idx + 1].backend or "sv").lower()
-                except Exception:
-                    next_backend = None
-            want_sv = False
-            if (node.backend or "sv").lower() == "tableau":
-                if next_backend == "sv":
-                    want_sv = True
-                elif next_backend == "dd" and not cfg.direct_tab_to_dd:
-                    want_sv = True
 
             need = _estimate_bytes_for_partition((node.backend or "sv"), n, want_sv)
             memgov.acquire(need)
