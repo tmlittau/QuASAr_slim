@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Callable
-import threading, time, logging, sys, os
+from typing import Dict, Any, List, Optional, Callable, Tuple
+import threading, time, logging, sys, os, hashlib
 from collections import defaultdict
 
 from .SSD import SSD, PartitionNode
@@ -181,6 +181,32 @@ def _estimate_bytes_for_partition(backend: str, n_qubits: int, want_sv: bool) ->
     # Fallback
     return 128 * 1024 * 1024
 
+
+def _hash_statevector(state: Any) -> Optional[str]:
+    """Return a stable hash for the provided statevector-like object."""
+
+    if state is None:
+        return None
+
+    try:  # numpy provides an efficient serialization of complex amplitudes.
+        import numpy as np  # type: ignore
+
+        try:
+            arr = np.asarray(state, dtype=np.complex128).ravel()
+            data = arr.view(np.float64).tobytes()
+            return hashlib.sha256(data).hexdigest()
+        except Exception:
+            pass
+    except Exception:  # pragma: no cover - numpy may be unavailable in some tests
+        np = None  # type: ignore  # noqa: F841
+
+    if isinstance(state, (bytes, bytearray, memoryview)):
+        payload = bytes(state)
+    else:
+        payload = repr(state).encode("utf-8")
+
+    return hashlib.sha256(payload).hexdigest()
+
 def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
     cpu_count = None
@@ -204,6 +230,8 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
 
     # per-partition progress counters
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
+    cache_stats = {"hits": 0, "misses": 0}
+    result_cache: Dict[Tuple[str, str, bool, Optional[str]], Dict[str, Any]] = {}
 
     chains = _group_chains(ssd)
     if cfg.max_workers <= 0:
@@ -233,6 +261,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
         for idx, node in enumerate(nodes):
             pid = node.id
             n = int(node.metrics.get("num_qubits", 0))
+            backend_name = (node.backend or "sv").lower()
 
             # Lookahead: decide whether we must materialize an SV at the end of this node.
             next_backend = None
@@ -242,18 +271,76 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                 except Exception:
                     next_backend = None
             want_sv = False
-            if (node.backend or "sv").lower() == "tableau":
+            if backend_name == "tableau":
                 if next_backend == "sv":
                     want_sv = True
                 elif next_backend == "dd" and not cfg.direct_tab_to_dd:
                     want_sv = True
 
-            need = _estimate_bytes_for_partition((node.backend or "sv"), n, want_sv)
-            memgov.acquire(need)
-
             total_gates = node.metrics.get("gate_count")
             if not total_gates:
                 total_gates = _count_gates(node.circuit)
+
+            fingerprint = node.meta.get("fingerprint")
+            if not fingerprint:
+                fingerprint = node.compute_fingerprint()
+                node.meta["fingerprint"] = fingerprint
+
+            init_hash = _hash_statevector(init_state) if backend_name == "sv" else None
+            cache_key: Tuple[str, str, bool, Optional[str]] = (
+                fingerprint,
+                backend_name,
+                bool(want_sv),
+                init_hash,
+            )
+
+            with lock:
+                cached_entry = result_cache.get(cache_key)
+
+            if cached_entry is not None:
+                node.meta["cache_hit"] = True
+                now = time.time()
+                status_entry = cached_entry["status"].copy()
+                status_entry.update(
+                    {
+                        "chain_id": cid,
+                        "seq_index": node.meta.get("seq_index", 0),
+                        "cache_hit": True,
+                        "cache_source_partition": cached_entry["partition_id"],
+                        "cache_fingerprint": fingerprint,
+                        "total_gates": int(total_gates),
+                        "num_qubits": n,
+                        "want_statevector": bool(want_sv),
+                        "mem_bytes": cached_entry.get("mem_bytes", 0),
+                        "elapsed_s": 0.0,
+                        "wall_s_measured": 0.0,
+                    }
+                )
+                if cached_entry["status"].get("elapsed_s") is not None:
+                    status_entry.setdefault(
+                        "cached_elapsed_s", cached_entry["status"].get("elapsed_s")
+                    )
+                if cached_entry["status"].get("wall_s_measured") is not None:
+                    status_entry.setdefault(
+                        "cached_wall_s", cached_entry["status"].get("wall_s_measured")
+                    )
+                with lock:
+                    progress[pid] = {
+                        "done": int(total_gates),
+                        "total": int(total_gates),
+                        "last_ts": now,
+                    }
+                    statuses[pid] = status_entry
+                    cache_stats["hits"] += 1
+                init_state = cached_entry.get("out")
+                continue
+
+            node.meta["cache_hit"] = False
+            with lock:
+                cache_stats["misses"] += 1
+
+            need = _estimate_bytes_for_partition((node.backend or "sv"), n, want_sv)
+            memgov.acquire(need)
 
             start = time.time()
             with lock:
@@ -266,64 +353,87 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "seq_index": node.meta.get("seq_index", 0),
                     "total_gates": int(total_gates),
                     "num_qubits": n,
-                    "want_statevector": want_sv,
+                    "want_statevector": bool(want_sv),
                     "mem_bytes": int(need),
+                    "cache_hit": False,
+                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_fingerprint": fingerprint,
                 }
 
             try:
                 out = _backend_runner(
                     node.backend or "sv",
                     node.circuit,
-                    init_state if (node.backend or "sv") == "sv" else None,
+                    init_state if backend_name == "sv" else None,
                     progress_cb=_make_progress_cb(pid),
                     want_statevector=want_sv,
                 )
                 elapsed = time.time() - start
+                success = (out is not None) or (not want_sv)
+                status_entry = {
+                    "status": "ok" if success else "failed",
+                    "backend": node.backend,
+                    "elapsed_s": elapsed,
+                    "wall_s_measured": elapsed,
+                    "statevector_len": None if out is None else len(out),
+                    "chain_id": cid,
+                    "seq_index": node.meta.get("seq_index", 0),
+                    "total_gates": int(total_gates),
+                    "num_qubits": n,
+                    "want_statevector": bool(want_sv),
+                    "mem_bytes": int(need),
+                    "cache_hit": False,
+                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_fingerprint": fingerprint,
+                }
                 with lock:
                     # mark all gates as done on success (if backend never reported)
                     pr = progress.get(pid, {})
                     if pr and pr.get("done", 0) < total_gates:
                         pr["done"] = int(total_gates)
                         pr["last_ts"] = time.time()
-                    success = (out is not None) or (not want_sv)
-                    statuses[pid] = {
-                        "status": "ok" if success else "failed",
-                        "backend": node.backend,
-                        "elapsed_s": elapsed,
-                        "wall_s_measured": elapsed,
-                        "statevector_len": None if out is None else len(out),
-                        "chain_id": cid,
-                        "seq_index": node.meta.get("seq_index", 0),
-                        "total_gates": int(total_gates),
-                        "num_qubits": n,
-                        "want_statevector": want_sv,
-                        "mem_bytes": int(need),
-                    }
-                    _attach_peak_rss(statuses[pid])
+                    statuses[pid] = status_entry
+                    _attach_peak_rss(status_entry)
                 init_state = out
+                with lock:
+                    result_cache[cache_key] = {
+                        "partition_id": pid,
+                        "status": status_entry.copy(),
+                        "out": out,
+                        "mem_bytes": int(need),
+                        "num_qubits": n,
+                        "total_gates": int(total_gates),
+                        "want_statevector": bool(want_sv),
+                        "backend": backend_name,
+                        "fingerprint": fingerprint,
+                    }
             except StatevectorSimulationError as exc:
                 elapsed = time.time() - start
+                status_entry = {
+                    "status": "estimated",
+                    "backend": node.backend,
+                    "elapsed_s": elapsed,
+                    "wall_s_measured": elapsed,
+                    "statevector_len": None,
+                    "error": str(exc),
+                    "chain_id": cid,
+                    "seq_index": node.meta.get("seq_index", 0),
+                    "total_gates": int(total_gates),
+                    "num_qubits": n,
+                    "want_statevector": bool(want_sv),
+                    "mem_bytes": int(need),
+                    "mem_bytes_estimated": int(need),
+                    "cache_hit": False,
+                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_fingerprint": fingerprint,
+                }
                 with lock:
                     pr = progress.get(pid, {})
                     if pr and pr.get("done", 0) < total_gates:
                         pr["done"] = int(total_gates)
                         pr["last_ts"] = time.time()
-                    statuses[pid] = {
-                        "status": "estimated",
-                        "backend": node.backend,
-                        "elapsed_s": elapsed,
-                        "wall_s_measured": elapsed,
-                        "statevector_len": None,
-                        "error": str(exc),
-                        "chain_id": cid,
-                        "seq_index": node.meta.get("seq_index", 0),
-                        "total_gates": int(total_gates),
-                        "num_qubits": n,
-                        "want_statevector": want_sv,
-                        "mem_bytes": int(need),
-                        "mem_bytes_estimated": int(need),
-                    }
-                    _attach_peak_rss(statuses[pid])
+                    statuses[pid] = status_entry
+                    _attach_peak_rss(status_entry)
                 LOGGER.warning(
                     "Partition %s on backend %s fell back to estimate: %s",
                     pid,
@@ -331,24 +441,52 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     exc,
                 )
                 init_state = None
+                with lock:
+                    result_cache[cache_key] = {
+                        "partition_id": pid,
+                        "status": status_entry.copy(),
+                        "out": None,
+                        "mem_bytes": int(need),
+                        "num_qubits": n,
+                        "total_gates": int(total_gates),
+                        "want_statevector": bool(want_sv),
+                        "backend": backend_name,
+                        "fingerprint": fingerprint,
+                    }
             except Exception as e:
                 elapsed = time.time() - start
+                status_entry = {
+                    "status": "error",
+                    "backend": node.backend,
+                    "elapsed_s": elapsed,
+                    "wall_s_measured": elapsed,
+                    "error": f"{type(e).__name__}: {e}",
+                    "chain_id": cid,
+                    "seq_index": node.meta.get("seq_index", 0),
+                    "total_gates": int(total_gates),
+                    "num_qubits": n,
+                    "want_statevector": bool(want_sv),
+                    "mem_bytes": int(need),
+                    "cache_hit": False,
+                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_fingerprint": fingerprint,
+                }
                 with lock:
-                    statuses[pid] = {
-                        "status": "error",
-                        "backend": node.backend,
-                        "elapsed_s": elapsed,
-                        "wall_s_measured": elapsed,
-                        "error": f"{type(e).__name__}: {e}",
-                        "chain_id": cid,
-                        "seq_index": node.meta.get("seq_index", 0),
-                        "total_gates": int(total_gates),
-                        "num_qubits": n,
-                        "want_statevector": want_sv,
-                        "mem_bytes": int(need),
-                    }
-                    _attach_peak_rss(statuses[pid])
+                    statuses[pid] = status_entry
+                    _attach_peak_rss(status_entry)
                 init_state = None
+                with lock:
+                    result_cache[cache_key] = {
+                        "partition_id": pid,
+                        "status": status_entry.copy(),
+                        "out": None,
+                        "mem_bytes": int(need),
+                        "num_qubits": n,
+                        "total_gates": int(total_gates),
+                        "want_statevector": bool(want_sv),
+                        "backend": backend_name,
+                        "fingerprint": fingerprint,
+                    }
             finally:
                 memgov.release(need)
 
@@ -410,12 +548,17 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
             val = 0
         if val > peak_rss:
             peak_rss = val
+    meta: Dict[str, Any] = {
+        "max_ram_gb": cfg.max_ram_gb,
+        "max_workers": cfg.max_workers,
+        "wall_elapsed_s": wall,
+    }
+    if peak_rss > 0:
+        meta["peak_rss_bytes"] = peak_rss
+    meta["cache_hits"] = cache_stats["hits"]
+    meta["cache_misses"] = cache_stats["misses"]
+
     return {
         "results": results,
-        "meta": {
-            "max_ram_gb": cfg.max_ram_gb,
-            "max_workers": cfg.max_workers,
-            "wall_elapsed_s": wall,
-            **({"peak_rss_bytes": peak_rss} if peak_rss > 0 else {}),
-        },
+        "meta": meta,
     }

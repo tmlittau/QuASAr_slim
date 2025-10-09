@@ -30,6 +30,15 @@ class _DummyCircuit:
         return 0
 
 
+class _StableCircuit(_DummyCircuit):
+    def __init__(self, num_qubits: int, label: str) -> None:
+        super().__init__(num_qubits)
+        self._label = label
+
+    def __str__(self) -> str:
+        return f"StableCircuit({self._label})"
+
+
 def _make_ssd(num_partitions: int, backend: str = "sv") -> SSD:
     ssd = SSD()
     for idx in range(num_partitions):
@@ -98,3 +107,35 @@ def test_execute_ssd_auto_workers_tracks_available_parallelism_for_tableau(
     execute_ssd(ssd, cfg)
 
     assert cfg.max_workers == expected
+
+
+def test_execute_ssd_reuses_cached_partitions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def _runner(name: str, circuit, initial_state, **_: object):
+        calls.append((name, getattr(circuit, "partition_id", None), initial_state))
+        return [0, 1]
+
+    monkeypatch.setattr(sim, "_backend_runner", _runner)
+
+    ssd = SSD()
+    shared_circuit = _StableCircuit(1, "h")
+    for idx in range(2):
+        node = PartitionNode(
+            id=idx,
+            qubits=[0],
+            circuit=shared_circuit,
+            metrics={"num_qubits": 1, "gate_count": 0},
+            backend="sv",
+        )
+        ssd.add(node)
+
+    result = execute_ssd(ssd, ExecutionConfig(max_workers=1, heartbeat_sec=0.001, stuck_warn_sec=0.01))
+
+    assert len(calls) == 1
+    statuses = result["results"]
+    assert statuses[0]["cache_hit"] is False
+    assert statuses[1]["cache_hit"] is True
+    assert statuses[1]["cache_source_partition"] == statuses[0]["partition"]
+    assert result["meta"]["cache_hits"] == 1
+    assert result["meta"]["cache_misses"] == 1

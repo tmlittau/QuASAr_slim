@@ -45,11 +45,22 @@ class PartitionNode:
 class SSD:
     partitions: List[PartitionNode] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
+    partition_cache: Dict[str, PartitionNode] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"meta": dict(self.meta), "partitions": [p.to_dict() for p in self.partitions]}
 
     def add(self, node: PartitionNode) -> None:
+        fingerprint = node.compute_fingerprint()
+        node.meta.setdefault("fingerprint", fingerprint)
+        cached = self.partition_cache.get(fingerprint)
+        if cached is not None:
+            node.meta["cache_hit"] = True
+            node.meta["cache_source"] = cached.id
+        else:
+            node.meta["cache_hit"] = False
+            node.meta["cache_source"] = node.id
+            self.partition_cache[fingerprint] = node
         self.partitions.append(node)
 
     def __len__(self) -> int:
