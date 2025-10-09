@@ -16,6 +16,7 @@ from time import perf_counter
 from typing import Dict, Iterable, List
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,6 +27,8 @@ from quasar.analyzer import analyze
 from quasar.planner import PlannerConfig, plan
 from quasar.simulation_engine import ExecutionConfig, execute_ssd
 
+from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
+
 
 @dataclass
 class CircuitSpec:
@@ -33,6 +36,7 @@ class CircuitSpec:
 
     kind: str
     params: Dict[str, object]
+    depth_hint: int | None = None
 
     def label(self) -> str:
         """Return a short label for plotting purposes."""
@@ -42,39 +46,161 @@ class CircuitSpec:
             return self.kind
         return f"{self.kind}\n(n={num_qubits})"
 
+    def depth_value(self) -> int | None:
+        """Best-effort extraction of an effective depth for the circuit."""
+
+        if self.depth_hint is not None:
+            return self.depth_hint
+
+        depth = self.params.get("depth")
+        if isinstance(depth, (int, float)):
+            return int(depth)
+
+        depth_pre = self.params.get("depth_pre")
+        depth_post = self.params.get("depth_post")
+        if isinstance(depth_pre, (int, float)) and isinstance(depth_post, (int, float)):
+            return int(depth_pre) + int(depth_post)
+
+        return None
+
+
+@dataclass
+class CircuitFamily:
+    """Group of related benchmark circuits."""
+
+    name: str
+    variants: List[CircuitSpec]
+    color_key: str
+
+    def display_label(self) -> str:
+        return self.name
+
+
+DEFAULT_FAMILIES: List[CircuitFamily] = [
+    CircuitFamily(
+        name="GHZ clusters",
+        color_key="tableau",
+        variants=[
+            CircuitSpec(
+                "ghz_clusters_random",
+                {"num_qubits": 16, "block_size": 8, "depth": 30, "seed": 1},
+            ),
+            CircuitSpec(
+                "ghz_clusters_random",
+                {"num_qubits": 24, "block_size": 8, "depth": 45, "seed": 11},
+            ),
+            CircuitSpec(
+                "ghz_clusters_random",
+                {"num_qubits": 28, "block_size": 7, "depth": 60, "seed": 21},
+            ),
+        ],
+    ),
+    CircuitFamily(
+        name="Random Clifford",
+        color_key="sv",
+        variants=[
+            CircuitSpec(
+                "random_clifford",
+                {"num_qubits": 18, "depth": 40, "seed": 2},
+            ),
+            CircuitSpec(
+                "random_clifford",
+                {"num_qubits": 24, "depth": 60, "seed": 12},
+            ),
+            CircuitSpec(
+                "random_clifford",
+                {"num_qubits": 30, "depth": 80, "seed": 22},
+            ),
+        ],
+    ),
+    CircuitFamily(
+        name="Stitched banded QFT",
+        color_key="dd",
+        variants=[
+            CircuitSpec(
+                "stitched_rand_bandedqft_rand",
+                {
+                    "num_qubits": 20,
+                    "block_size": 5,
+                    "depth_pre": 15,
+                    "depth_post": 15,
+                    "qft_bandwidth": 2,
+                    "seed": 3,
+                },
+                depth_hint=30,
+            ),
+            CircuitSpec(
+                "stitched_rand_bandedqft_rand",
+                {
+                    "num_qubits": 22,
+                    "block_size": 6,
+                    "depth_pre": 20,
+                    "depth_post": 20,
+                    "qft_bandwidth": 2,
+                    "seed": 13,
+                },
+                depth_hint=40,
+            ),
+            CircuitSpec(
+                "stitched_rand_bandedqft_rand",
+                {
+                    "num_qubits": 26,
+                    "block_size": 6,
+                    "depth_pre": 25,
+                    "depth_post": 25,
+                    "qft_bandwidth": 3,
+                    "seed": 23,
+                },
+                depth_hint=50,
+            ),
+        ],
+    ),
+    CircuitFamily(
+        name="Clifford + rotations",
+        color_key="conversion",
+        variants=[
+            CircuitSpec(
+                "clifford_plus_rot",
+                {
+                    "num_qubits": 18,
+                    "depth": 35,
+                    "rot_prob": 0.3,
+                    "angle_scale": 0.2,
+                    "block_size": 6,
+                    "pair_scope": "block",
+                    "seed": 4,
+                },
+            ),
+            CircuitSpec(
+                "clifford_plus_rot",
+                {
+                    "num_qubits": 24,
+                    "depth": 55,
+                    "rot_prob": 0.35,
+                    "angle_scale": 0.25,
+                    "block_size": 6,
+                    "pair_scope": "block",
+                    "seed": 14,
+                },
+            ),
+            CircuitSpec(
+                "clifford_plus_rot",
+                {
+                    "num_qubits": 28,
+                    "depth": 70,
+                    "rot_prob": 0.4,
+                    "angle_scale": 0.3,
+                    "block_size": 7,
+                    "pair_scope": "block",
+                    "seed": 24,
+                },
+            ),
+        ],
+    ),
+]
 
 DEFAULT_CIRCUITS: List[CircuitSpec] = [
-    CircuitSpec(
-        "ghz_clusters_random",
-        {"num_qubits": 16, "block_size": 8, "depth": 30, "seed": 1},
-    ),
-    CircuitSpec(
-        "random_clifford",
-        {"num_qubits": 18, "depth": 40, "seed": 2},
-    ),
-    CircuitSpec(
-        "stitched_rand_bandedqft_rand",
-        {
-            "num_qubits": 20,
-            "block_size": 5,
-            "depth_pre": 15,
-            "depth_post": 15,
-            "qft_bandwidth": 2,
-            "seed": 3,
-        },
-    ),
-    CircuitSpec(
-        "clifford_plus_rot",
-        {
-            "num_qubits": 18,
-            "depth": 35,
-            "rot_prob": 0.3,
-            "angle_scale": 0.2,
-            "block_size": 6,
-            "pair_scope": "block",
-            "seed": 4,
-        },
-    ),
+    spec for family in DEFAULT_FAMILIES for spec in family.variants
 ]
 
 
@@ -140,34 +266,99 @@ def _run_circuit(
     )
 
 
-def _plot_results(results: List[RunResult], output_path: Path) -> None:
-    if not results:
+def _format_range(values: List[int | None]) -> str:
+    numeric = [val for val in values if val is not None]
+    if not numeric:
+        return "N/A"
+    lo, hi = min(numeric), max(numeric)
+    if lo == hi:
+        return f"{lo}"
+    return f"{lo}–{hi}"
+
+
+def _plot_results(
+    families: List[CircuitFamily],
+    family_results: Dict[str, List[RunResult]],
+    output_path: Path,
+) -> None:
+    if not family_results:
         raise ValueError("No results available to plot")
 
+    apply_paper_style()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    sorted_results = sorted(results, key=lambda r: r.execution_time_s)
-    runtimes = [res.execution_time_s for res in sorted_results]
-    overheads = [res.planning_overhead_pct for res in sorted_results]
-    labels = [res.circuit.label() for res in sorted_results]
+    family_labels: List[str] = []
+    means: List[float] = []
+    errors: List[float] = []
+    qubit_ranges: List[str] = []
+    depth_ranges: List[str] = []
+    colors: List[str] = []
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(runtimes, overheads, color="#1f77b4", zorder=3)
+    for family in families:
+        results = family_results.get(family.name, [])
+        if not results:
+            continue
 
-    for runtime, overhead, label in zip(runtimes, overheads, labels):
-        ax.annotate(
-            label,
-            xy=(runtime, overhead),
-            xytext=(5, 5),
-            textcoords="offset points",
-            fontsize=9,
-            ha="left",
+        overheads = [res.planning_overhead_pct for res in results if not np.isnan(res.planning_overhead_pct)]
+        if not overheads:
+            continue
+
+        mean_overhead = float(np.mean(overheads))
+        std_overhead = float(np.std(overheads, ddof=1)) if len(overheads) > 1 else 0.0
+
+        family_labels.append(family.display_label())
+        means.append(mean_overhead)
+        errors.append(std_overhead)
+        colors.append(PASTEL_COLORS.get(family.color_key, PASTEL_COLORS["tableau"]))
+
+        qubits = [res.num_qubits for res in results]
+        qubit_ranges.append(_format_range(qubits))
+        depth_ranges.append(
+            _format_range([spec.depth_value() for spec in family.variants])
         )
 
-    ax.set_xlabel("Execution wall time (s)")
-    ax.set_ylabel("Planning overhead (%)")
-    ax.set_title("Planning overhead vs execution runtime")
-    ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+    if not means:
+        raise ValueError("No valid overhead data to plot")
+
+    x = np.arange(len(means))
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.bar(
+        x,
+        means,
+        yerr=errors,
+        color=colors,
+        edgecolor=EDGE_COLOR,
+        linewidth=1.0,
+        capsize=6,
+    )
+
+    ax.set_xticks(x, family_labels)
+    ax.set_ylabel("Relative planning overhead (%)")
+    ax.set_title("Planning overhead across circuit families")
+    ax.set_axisbelow(True)
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.7)
+
+    max_height = max(bar.get_height() + err for bar, err in zip(bars, errors))
+    offset = max(0.05 * max_height, 1.0)
+
+    for xpos, bar, err, qubits, depths in zip(x, bars, errors, qubit_ranges, depth_ranges):
+        height = bar.get_height()
+        box_text = f"Qubits: {qubits}\nDepth: {depths}"
+        ax.text(
+            xpos,
+            height + err + offset,
+            box_text,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.4",
+                "facecolor": "white",
+                "edgecolor": EDGE_COLOR,
+                "linewidth": 0.8,
+            },
+        )
 
     fig.tight_layout()
     fig.savefig(output_path)
@@ -206,23 +397,27 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    specs = DEFAULT_CIRCUITS
-    _validate_circuits(specs)
+    families = DEFAULT_FAMILIES
+    _validate_circuits(DEFAULT_CIRCUITS)
 
     planner_cfg = PlannerConfig(max_ram_gb=args.max_ram_gb)
     exec_cfg = ExecutionConfig(max_ram_gb=args.max_ram_gb, max_workers=args.max_workers)
 
     results: List[RunResult] = []
-    for spec in specs:
-        result = _run_circuit(spec, planner_cfg, exec_cfg)
-        results.append(result)
-        print(
-            f"{spec.kind}: planning={result.planning_time_s:.3f}s, "
-            f"execution={result.execution_time_s:.3f}s, "
-            f"overhead={result.planning_overhead_pct:.1f}%",
-        )
+    family_results: Dict[str, List[RunResult]] = {family.name: [] for family in families}
+    for family in families:
+        for spec in family.variants:
+            result = _run_circuit(spec, planner_cfg, exec_cfg)
+            results.append(result)
+            family_results[family.name].append(result)
+            print(
+                f"{family.name} ({spec.params.get('num_qubits', 'n/a')}q): "
+                f"planning={result.planning_time_s:.3f}s, "
+                f"execution={result.execution_time_s:.3f}s, "
+                f"overhead={result.planning_overhead_pct:.1f}%",
+            )
 
-    _plot_results(results, args.output)
+    _plot_results(families, family_results, args.output)
     print(f"Saved plot to {args.output}")
 
     if args.data_out is not None:
