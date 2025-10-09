@@ -76,126 +76,102 @@ class CircuitFamily:
         return self.name
 
 
+_DEFAULT_QUBIT_VALUES = list(range(16, 33, 4))
+_DEFAULT_DEPTH_VALUES = list(range(4000, 12001, 1000))
+
+
+def _disjoint_variants() -> List[CircuitSpec]:
+    variants: List[CircuitSpec] = []
+    for num_qubits in _DEFAULT_QUBIT_VALUES:
+        num_blocks = max(2, num_qubits // 4)
+        for depth in _DEFAULT_DEPTH_VALUES:
+            variants.append(
+                CircuitSpec(
+                    "disjoint_preps_plus_tails",
+                    {
+                        "num_qubits": num_qubits,
+                        "num_blocks": num_blocks,
+                        "block_prep": "mixed",
+                        "tail_kind": "hybrid",
+                        "tail_depth": depth,
+                        "angle_scale": 0.2,
+                        "sparsity": 0.08,
+                        "bandwidth": 3,
+                        "seed": num_qubits * 1000 + depth,
+                    },
+                    depth_hint=depth,
+                )
+            )
+    return variants
+
+
+def _hybrid_rotation_variants() -> List[CircuitSpec]:
+    variants: List[CircuitSpec] = []
+    for num_qubits in _DEFAULT_QUBIT_VALUES:
+        for depth in _DEFAULT_DEPTH_VALUES:
+            variants.append(
+                CircuitSpec(
+                    "clifford_prefix_rot_tail",
+                    {
+                        "num_qubits": num_qubits,
+                        "depth": depth,
+                        "cutoff": 0.8,
+                        "angle_scale": 0.3,
+                        "seed": num_qubits * 2000 + depth,
+                    },
+                )
+            )
+    return variants
+
+
+def _hybrid_sparse_tail_variants() -> List[CircuitSpec]:
+    variants: List[CircuitSpec] = []
+    for num_qubits in _DEFAULT_QUBIT_VALUES:
+        for depth in _DEFAULT_DEPTH_VALUES:
+            variants.append(
+                CircuitSpec(
+                    "sparse_clifford_prefix_sparse_tail",
+                    {
+                        "num_qubits": num_qubits,
+                        "depth": depth,
+                        "cutoff": 0.75,
+                        "angle_scale": 0.2,
+                        "prefix_single_prob": 0.5,
+                        "prefix_twoq_prob": 0.2,
+                        "prefix_max_pair_distance": 3,
+                        "tail_sparsity": 0.1,
+                        "tail_bandwidth": 3,
+                        "seed": num_qubits * 3000 + depth,
+                    },
+                )
+            )
+    return variants
+
+
+_DISJOINT_VARIANTS = _disjoint_variants()
+_ROTATION_VARIANTS = _hybrid_rotation_variants()
+_SPARSE_VARIANTS = _hybrid_sparse_tail_variants()
+
 DEFAULT_FAMILIES: List[CircuitFamily] = [
     CircuitFamily(
-        name="GHZ clusters",
+        name="Disjoint circuits",
         color_key="tableau",
-        variants=[
-            CircuitSpec(
-                "ghz_clusters_random",
-                {"num_qubits": 16, "block_size": 8, "depth": 30, "seed": 1},
-            ),
-            CircuitSpec(
-                "ghz_clusters_random",
-                {"num_qubits": 24, "block_size": 8, "depth": 45, "seed": 11},
-            ),
-            CircuitSpec(
-                "ghz_clusters_random",
-                {"num_qubits": 28, "block_size": 7, "depth": 60, "seed": 21},
-            ),
-        ],
+        variants=_DISJOINT_VARIANTS,
     ),
     CircuitFamily(
-        name="Random Clifford",
-        color_key="sv",
-        variants=[
-            CircuitSpec(
-                "random_clifford",
-                {"num_qubits": 18, "depth": 40, "seed": 2},
-            ),
-            CircuitSpec(
-                "random_clifford",
-                {"num_qubits": 24, "depth": 60, "seed": 12},
-            ),
-            CircuitSpec(
-                "random_clifford",
-                {"num_qubits": 30, "depth": 80, "seed": 22},
-            ),
-        ],
-    ),
-    CircuitFamily(
-        name="Stitched banded QFT",
-        color_key="dd",
-        variants=[
-            CircuitSpec(
-                "stitched_rand_bandedqft_rand",
-                {
-                    "num_qubits": 20,
-                    "block_size": 5,
-                    "depth_pre": 15,
-                    "depth_post": 15,
-                    "qft_bandwidth": 2,
-                    "seed": 3,
-                },
-                depth_hint=30,
-            ),
-            CircuitSpec(
-                "stitched_rand_bandedqft_rand",
-                {
-                    "num_qubits": 22,
-                    "block_size": 6,
-                    "depth_pre": 20,
-                    "depth_post": 20,
-                    "qft_bandwidth": 2,
-                    "seed": 13,
-                },
-                depth_hint=40,
-            ),
-            CircuitSpec(
-                "stitched_rand_bandedqft_rand",
-                {
-                    "num_qubits": 26,
-                    "block_size": 6,
-                    "depth_pre": 25,
-                    "depth_post": 25,
-                    "qft_bandwidth": 3,
-                    "seed": 23,
-                },
-                depth_hint=50,
-            ),
-        ],
-    ),
-    CircuitFamily(
-        name="Clifford + rotations",
+        name="Hybrid Clifford + rotations",
         color_key="conversion",
-        variants=[
-            CircuitSpec(
-                "clifford_plus_rot",
-                {
-                    "num_qubits": 18,
-                    "depth": 35,
-                    "rot_prob": 0.3,
-                    "angle_scale": 0.2,
-                    "block_size": 6,
-                    "pair_scope": "block",
-                    "seed": 4,
-                },
-            ),
-            CircuitSpec(
-                "clifford_plus_rot",
-                {
-                    "num_qubits": 24,
-                    "depth": 55,
-                    "rot_prob": 0.35,
-                    "angle_scale": 0.25,
-                    "block_size": 6,
-                    "pair_scope": "block",
-                    "seed": 14,
-                },
-            ),
-            CircuitSpec(
-                "clifford_plus_rot",
-                {
-                    "num_qubits": 28,
-                    "depth": 70,
-                    "rot_prob": 0.4,
-                    "angle_scale": 0.3,
-                    "block_size": 7,
-                    "pair_scope": "block",
-                    "seed": 24,
-                },
-            ),
-        ],
+        variants=_ROTATION_VARIANTS,
+    ),
+    CircuitFamily(
+        name="Hybrid Clifford + sparse tail",
+        color_key="dd",
+        variants=_SPARSE_VARIANTS,
+    ),
+    CircuitFamily(
+        name="Combined families",
+        color_key="sv",
+        variants=_DISJOINT_VARIANTS + _ROTATION_VARIANTS + _SPARSE_VARIANTS,
     ),
 ]
 
@@ -231,6 +207,12 @@ def _validate_circuits(specs: Iterable[CircuitSpec]) -> None:
         raise ValueError(
             "Unknown circuit kinds: " + ", ".join(missing) + f". Known kinds: {known}"
         )
+
+
+def _spec_cache_key(spec: CircuitSpec) -> str:
+    params_repr = json.dumps(spec.params, sort_keys=True, default=str)
+    depth_repr = "" if spec.depth_hint is None else str(spec.depth_hint)
+    return f"{spec.kind}|{params_repr}|{depth_repr}"
 
 
 def _run_circuit(
@@ -403,19 +385,24 @@ def main() -> None:
     planner_cfg = PlannerConfig(max_ram_gb=args.max_ram_gb)
     exec_cfg = ExecutionConfig(max_ram_gb=args.max_ram_gb, max_workers=args.max_workers)
 
-    results: List[RunResult] = []
+    unique_results: List[RunResult] = []
     family_results: Dict[str, List[RunResult]] = {family.name: [] for family in families}
+    cache: Dict[str, RunResult] = {}
     for family in families:
         for spec in family.variants:
-            result = _run_circuit(spec, planner_cfg, exec_cfg)
-            results.append(result)
+            cache_key = _spec_cache_key(spec)
+            result = cache.get(cache_key)
+            if result is None:
+                result = _run_circuit(spec, planner_cfg, exec_cfg)
+                cache[cache_key] = result
+                unique_results.append(result)
+                print(
+                    f"{family.name} ({spec.params.get('num_qubits', 'n/a')}q): "
+                    f"planning={result.planning_time_s:.3f}s, "
+                    f"execution={result.execution_time_s:.3f}s, "
+                    f"overhead={result.planning_overhead_pct:.1f}%",
+                )
             family_results[family.name].append(result)
-            print(
-                f"{family.name} ({spec.params.get('num_qubits', 'n/a')}q): "
-                f"planning={result.planning_time_s:.3f}s, "
-                f"execution={result.execution_time_s:.3f}s, "
-                f"overhead={result.planning_overhead_pct:.1f}%",
-            )
 
     _plot_results(families, family_results, args.output)
     print(f"Saved plot to {args.output}")
@@ -423,7 +410,7 @@ def main() -> None:
     if args.data_out is not None:
         args.data_out.parent.mkdir(parents=True, exist_ok=True)
         with args.data_out.open("w", encoding="utf-8") as fh:
-            json.dump([res.to_dict() for res in results], fh, indent=2)
+            json.dump([res.to_dict() for res in unique_results], fh, indent=2)
         print(f"Saved timing data to {args.data_out}")
 
 
