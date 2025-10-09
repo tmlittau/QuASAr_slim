@@ -11,9 +11,11 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, asdict
+import multiprocessing as mp
+import queue
 from pathlib import Path
 from time import perf_counter
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -76,15 +78,17 @@ class CircuitFamily:
         return self.name
 
 
-_DEFAULT_QUBIT_VALUES = list(range(16, 33, 4))
-_DEFAULT_DEPTH_VALUES = list(range(4000, 12001, 1000))
+_DISJOINT_QUBIT_VALUES = list(range(16, 33, 4))
+_DISJOINT_DEPTH_VALUES = list(range(4000, 12001, 1000))
+_HYBRID_QUBIT_VALUES = [8, 12, 16]
+_HYBRID_DEPTH_VALUES = [8000]
 
 
 def _disjoint_variants() -> List[CircuitSpec]:
     variants: List[CircuitSpec] = []
-    for num_qubits in _DEFAULT_QUBIT_VALUES:
+    for num_qubits in _DISJOINT_QUBIT_VALUES:
         num_blocks = max(2, num_qubits // 4)
-        for depth in _DEFAULT_DEPTH_VALUES:
+        for depth in _DISJOINT_DEPTH_VALUES:
             variants.append(
                 CircuitSpec(
                     "disjoint_preps_plus_tails",
@@ -107,8 +111,8 @@ def _disjoint_variants() -> List[CircuitSpec]:
 
 def _hybrid_rotation_variants() -> List[CircuitSpec]:
     variants: List[CircuitSpec] = []
-    for num_qubits in _DEFAULT_QUBIT_VALUES:
-        for depth in _DEFAULT_DEPTH_VALUES:
+    for num_qubits in _HYBRID_QUBIT_VALUES:
+        for depth in _HYBRID_DEPTH_VALUES:
             variants.append(
                 CircuitSpec(
                     "clifford_prefix_rot_tail",
@@ -126,8 +130,8 @@ def _hybrid_rotation_variants() -> List[CircuitSpec]:
 
 def _hybrid_sparse_tail_variants() -> List[CircuitSpec]:
     variants: List[CircuitSpec] = []
-    for num_qubits in _DEFAULT_QUBIT_VALUES:
-        for depth in _DEFAULT_DEPTH_VALUES:
+    for num_qubits in _HYBRID_QUBIT_VALUES:
+        for depth in _HYBRID_DEPTH_VALUES:
             variants.append(
                 CircuitSpec(
                     "sparse_clifford_prefix_sparse_tail",
@@ -152,6 +156,49 @@ _DISJOINT_VARIANTS = _disjoint_variants()
 _ROTATION_VARIANTS = _hybrid_rotation_variants()
 _SPARSE_VARIANTS = _hybrid_sparse_tail_variants()
 
+
+def _combined_hybrid_variants() -> List[CircuitSpec]:
+    base_blocks: List[CircuitSpec] = [
+        spec
+        for spec in (_ROTATION_VARIANTS + _SPARSE_VARIANTS)
+        if spec.params.get("num_qubits") == 8
+    ]
+    if not base_blocks:
+        return []
+
+    variants: List[CircuitSpec] = []
+    for num_blocks in (3, 4):
+        for index, _ in enumerate(base_blocks):
+            block_specs: List[Dict[str, object]] = []
+            for offset in range(num_blocks):
+                ref = base_blocks[(index + offset) % len(base_blocks)]
+                params = dict(ref.params)
+                if "seed" in params:
+                    try:
+                        params["seed"] = int(params["seed"]) + 97 * offset + 11 * index
+                    except Exception:
+                        pass
+                block_specs.append({
+                    "kind": ref.kind,
+                    "params": params,
+                })
+            total_qubits = sum(
+                int(block.get("params", {}).get("num_qubits", 0)) for block in block_specs
+            )
+            variants.append(
+                CircuitSpec(
+                    "combined_hybrid_blocks",
+                    {
+                        "block_specs": block_specs,
+                        "num_blocks": num_blocks,
+                        "num_qubits": total_qubits,
+                        "seed_index": index,
+                    },
+                    depth_hint=_HYBRID_DEPTH_VALUES[0],
+                )
+            )
+    return variants
+
 DEFAULT_FAMILIES: List[CircuitFamily] = [
     CircuitFamily(
         name="Disjoint circuits",
@@ -171,7 +218,7 @@ DEFAULT_FAMILIES: List[CircuitFamily] = [
     CircuitFamily(
         name="Combined families",
         color_key="sv",
-        variants=_DISJOINT_VARIANTS + _ROTATION_VARIANTS + _SPARSE_VARIANTS,
+        variants=_combined_hybrid_variants(),
     ),
 ]
 
@@ -190,6 +237,7 @@ class RunResult:
     planning_time_s: float
     execution_time_s: float
     planning_overhead_pct: float
+    execution_time_estimated: bool = False
 
     def to_dict(self) -> Dict[str, object]:
         payload = asdict(self)
@@ -198,6 +246,62 @@ class RunResult:
             "params": self.circuit.params,
         }
         return payload
+
+
+def _execute_worker(
+    q: mp.Queue,
+    ssd,
+    exec_cfg: ExecutionConfig,
+) -> None:
+    """Run ``execute_ssd`` in a worker process and communicate the outcome."""
+
+    try:
+        result = execute_ssd(ssd, exec_cfg)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        q.put(("error", (type(exc).__name__, str(exc))))
+    else:
+        q.put(("ok", result))
+
+
+def _execute_with_timeout(
+    ssd,
+    exec_cfg: ExecutionConfig,
+    timeout_s: float | None,
+) -> Tuple[Dict[str, object] | None, bool]:
+    """Run ``execute_ssd`` with a wall-clock timeout."""
+
+    if timeout_s is None or timeout_s <= 0:
+        return execute_ssd(ssd, exec_cfg), False
+
+    ctx = mp.get_context("spawn")
+    q: mp.Queue = ctx.Queue()
+    proc = ctx.Process(target=_execute_worker, args=(q, ssd, exec_cfg))
+    proc.start()
+    proc.join(timeout_s)
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        while True:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                break
+        q.close()
+        return None, True
+
+    try:
+        status, payload = q.get_nowait()
+    except queue.Empty:  # pragma: no cover - unexpected worker exit
+        raise RuntimeError("Execution worker exited without returning a result")
+
+    q.close()
+
+    if status == "ok":
+        return payload, False
+
+    name, message = payload
+    raise RuntimeError(f"Execution failed in worker ({name}): {message}")
 
 
 def _validate_circuits(specs: Iterable[CircuitSpec]) -> None:
@@ -219,6 +323,7 @@ def _run_circuit(
     spec: CircuitSpec,
     planner_cfg: PlannerConfig,
     exec_cfg: ExecutionConfig,
+    timeout_s: float | None,
 ) -> RunResult:
     circuit = build_circuit(spec.kind, **spec.params)
 
@@ -230,8 +335,19 @@ def _run_circuit(
     planned = plan(analysis.ssd, planner_cfg)
     planning_time = perf_counter() - plan_start
 
-    execution = execute_ssd(planned, exec_cfg)
-    execution_time = float(execution.get("meta", {}).get("wall_elapsed_s", 0.0))
+    execution_start = perf_counter()
+    execution_payload, timed_out = _execute_with_timeout(planned, exec_cfg, timeout_s)
+    if timed_out:
+        fallback = float(timeout_s or 0.0)
+        execution_time = max(fallback, planning_time)
+        execution_time_estimated = True
+    else:
+        execution_time = float(
+            (execution_payload or {}).get("meta", {}).get("wall_elapsed_s", 0.0)
+        )
+        if execution_time <= 0:
+            execution_time = perf_counter() - execution_start
+        execution_time_estimated = False
 
     if execution_time <= 0:
         planning_overhead_pct = float("nan")
@@ -245,6 +361,7 @@ def _run_circuit(
         planning_time_s=planning_time,
         execution_time_s=execution_time,
         planning_overhead_pct=planning_overhead_pct,
+        execution_time_estimated=execution_time_estimated,
     )
 
 
@@ -373,6 +490,12 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Override the number of worker threads used during execution.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Maximum execution time in seconds for each circuit before falling back to an estimate.",
+    )
     return parser.parse_args()
 
 
@@ -393,13 +516,14 @@ def main() -> None:
             cache_key = _spec_cache_key(spec)
             result = cache.get(cache_key)
             if result is None:
-                result = _run_circuit(spec, planner_cfg, exec_cfg)
+                result = _run_circuit(spec, planner_cfg, exec_cfg, args.timeout)
                 cache[cache_key] = result
                 unique_results.append(result)
+                estimate_note = " (estimated)" if result.execution_time_estimated else ""
                 print(
                     f"{family.name} ({spec.params.get('num_qubits', 'n/a')}q): "
                     f"planning={result.planning_time_s:.3f}s, "
-                    f"execution={result.execution_time_s:.3f}s, "
+                    f"execution={result.execution_time_s:.3f}s{estimate_note}, "
                     f"overhead={result.planning_overhead_pct:.1f}%",
                 )
             family_results[family.name].append(result)

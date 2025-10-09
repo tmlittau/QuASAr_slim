@@ -14,6 +14,7 @@ __all__ = [
     "stitched_disjoint_rand_bandedqft_rand",
     "stitched_disjoint_diag_bandedqft_diag",
     "stitched_disjoint_clifford_rotations_bridge",
+    "combined_hybrid_blocks",
     "clifford_plus_random_rotations",
     "clifford_prefix_rot_tail",
     "sparse_clifford_prefix_sparse_tail",
@@ -461,6 +462,52 @@ def stitched_disjoint_clifford_rotations_bridge(
     return qc
 
 
+def combined_hybrid_blocks(
+    *,
+    block_specs: list[dict[str, Any]],
+    num_blocks: int | None = None,
+    num_qubits: int | None = None,
+    seed_index: int | None = None,
+) -> QuantumCircuit:
+    """Stitch multiple hybrid blocks together without interaction between them."""
+
+    if not block_specs:
+        raise ValueError("block_specs must contain at least one block description")
+
+    built_blocks: list[QuantumCircuit] = []
+    total_qubits = 0
+    for spec in block_specs:
+        kind = spec.get("kind")
+        if not isinstance(kind, str):
+            raise ValueError("Each block spec must include a 'kind' string")
+        params = dict(spec.get("params", {}))
+        builder = CIRCUIT_REGISTRY.get(kind)
+        if builder is None:
+            raise ValueError(f"Unknown block kind '{kind}' in combined_hybrid_blocks")
+        block = builder(**params)
+        total_qubits += block.num_qubits
+        built_blocks.append(block)
+
+    if num_blocks is not None and int(num_blocks) != len(block_specs):
+        raise ValueError(
+            f"Declared num_blocks={num_blocks} does not match provided blocks {len(block_specs)}"
+        )
+
+    if num_qubits is not None and int(num_qubits) != total_qubits:
+        raise ValueError(
+            f"Declared num_qubits={num_qubits} does not match combined size {total_qubits}"
+        )
+
+    qc = QuantumCircuit(total_qubits)
+    start = 0
+    for block in built_blocks:
+        width = block.num_qubits
+        qc.compose(block, qubits=list(range(start, start + width)), inplace=True)
+        start += width
+
+    return qc
+
+
 CIRCUIT_REGISTRY: Dict[str, Any] = {
     "ghz_clusters_random": ghz_clusters_random,
     "random_clifford": random_clifford,
@@ -470,6 +517,7 @@ CIRCUIT_REGISTRY: Dict[str, Any] = {
     "clifford_plus_rot": clifford_plus_random_rotations,
     "clifford_prefix_rot_tail": clifford_prefix_rot_tail,
     "sparse_clifford_prefix_sparse_tail": sparse_clifford_prefix_sparse_tail,
+    "combined_hybrid_blocks": combined_hybrid_blocks,
 }
 
 
