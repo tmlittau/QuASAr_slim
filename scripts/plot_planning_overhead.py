@@ -80,8 +80,10 @@ class CircuitFamily:
 
 _DISJOINT_QUBIT_VALUES = list(range(16, 33, 4))
 _DISJOINT_DEPTH_VALUES = list(range(4000, 12001, 1000))
-_HYBRID_QUBIT_VALUES = [8, 12, 16]
+_HYBRID_QUBIT_VALUES = [12, 14, 16]
 _HYBRID_DEPTH_VALUES = [8000]
+_COMBINED_BLOCK_DEPTH = 10000
+_COMBINED_BLOCK_COUNT = 4
 
 
 def _disjoint_variants() -> List[CircuitSpec]:
@@ -158,45 +160,58 @@ _SPARSE_VARIANTS = _hybrid_sparse_tail_variants()
 
 
 def _combined_hybrid_variants() -> List[CircuitSpec]:
-    base_blocks: List[CircuitSpec] = [
-        spec
-        for spec in (_ROTATION_VARIANTS + _SPARSE_VARIANTS)
-        if spec.params.get("num_qubits") == 8
-    ]
+    base_blocks: List[CircuitSpec] = []
+    for spec in _ROTATION_VARIANTS + _SPARSE_VARIANTS:
+        if spec.params.get("num_qubits") != 16:
+            continue
+        params = dict(spec.params)
+        params["depth"] = _COMBINED_BLOCK_DEPTH
+        seed = params.get("seed")
+        if isinstance(seed, (int, float)):
+            params["seed"] = int(seed)
+        else:
+            try:
+                params["seed"] = int(params.get("num_qubits", 0))
+            except Exception:
+                pass
+        if spec.kind == "clifford_prefix_rot_tail":
+            params["seed"] = int(params.get("num_qubits", 0)) * 2000 + _COMBINED_BLOCK_DEPTH
+        elif spec.kind == "sparse_clifford_prefix_sparse_tail":
+            params["seed"] = int(params.get("num_qubits", 0)) * 3000 + _COMBINED_BLOCK_DEPTH
+        base_blocks.append(CircuitSpec(spec.kind, params, depth_hint=_COMBINED_BLOCK_DEPTH))
     if not base_blocks:
         return []
 
     variants: List[CircuitSpec] = []
-    for num_blocks in (3, 4):
-        for index, _ in enumerate(base_blocks):
-            block_specs: List[Dict[str, object]] = []
-            for offset in range(num_blocks):
-                ref = base_blocks[(index + offset) % len(base_blocks)]
-                params = dict(ref.params)
-                if "seed" in params:
-                    try:
-                        params["seed"] = int(params["seed"]) + 97 * offset + 11 * index
-                    except Exception:
-                        pass
-                block_specs.append({
-                    "kind": ref.kind,
-                    "params": params,
-                })
-            total_qubits = sum(
-                int(block.get("params", {}).get("num_qubits", 0)) for block in block_specs
+    for index, _ in enumerate(base_blocks):
+        block_specs: List[Dict[str, object]] = []
+        for offset in range(_COMBINED_BLOCK_COUNT):
+            ref = base_blocks[(index + offset) % len(base_blocks)]
+            params = dict(ref.params)
+            if "seed" in params:
+                try:
+                    params["seed"] = int(params["seed"]) + 97 * offset + 11 * index
+                except Exception:
+                    pass
+            block_specs.append({
+                "kind": ref.kind,
+                "params": params,
+            })
+        total_qubits = sum(
+            int(block.get("params", {}).get("num_qubits", 0)) for block in block_specs
+        )
+        variants.append(
+            CircuitSpec(
+                "combined_hybrid_blocks",
+                {
+                    "block_specs": block_specs,
+                    "num_blocks": _COMBINED_BLOCK_COUNT,
+                    "num_qubits": total_qubits,
+                    "seed_index": index,
+                },
+                depth_hint=_COMBINED_BLOCK_DEPTH,
             )
-            variants.append(
-                CircuitSpec(
-                    "combined_hybrid_blocks",
-                    {
-                        "block_specs": block_specs,
-                        "num_blocks": num_blocks,
-                        "num_qubits": total_qubits,
-                        "seed_index": index,
-                    },
-                    depth_hint=_HYBRID_DEPTH_VALUES[0],
-                )
-            )
+        )
     return variants
 
 DEFAULT_FAMILIES: List[CircuitFamily] = [
