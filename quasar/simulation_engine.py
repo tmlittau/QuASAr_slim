@@ -34,6 +34,7 @@ class ExecutionConfig:
     # If True, assume a direct Tableau->DD conversion exists (no SV needed in between).
     # If False, we'll materialize a statevector before DD (tab->sv->dd).
     direct_tab_to_dd: bool = False
+    enable_partition_cache: bool = True
 
 class _MemGovernor:
     def __init__(self, cap_bytes: int) -> None:
@@ -231,6 +232,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     # per-partition progress counters
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
     cache_stats = {"hits": 0, "misses": 0}
+    cache_enabled = bool(getattr(cfg, "enable_partition_cache", True))
     result_cache: Dict[Tuple[str, str, bool, Optional[str]], Dict[str, Any]] = {}
 
     chains = _group_chains(ssd)
@@ -294,8 +296,10 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                 init_hash,
             )
 
-            with lock:
-                cached_entry = result_cache.get(cache_key)
+            cached_entry = None
+            if cache_enabled:
+                with lock:
+                    cached_entry = result_cache.get(cache_key)
 
             if cached_entry is not None:
                 node.meta["cache_hit"] = True
@@ -336,8 +340,9 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                 continue
 
             node.meta["cache_hit"] = False
-            with lock:
-                cache_stats["misses"] += 1
+            if cache_enabled:
+                with lock:
+                    cache_stats["misses"] += 1
 
             need = _estimate_bytes_for_partition((node.backend or "sv"), n, want_sv)
             memgov.acquire(need)
@@ -395,18 +400,19 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     statuses[pid] = status_entry
                     _attach_peak_rss(status_entry)
                 init_state = out
-                with lock:
-                    result_cache[cache_key] = {
-                        "partition_id": pid,
-                        "status": status_entry.copy(),
-                        "out": out,
-                        "mem_bytes": int(need),
-                        "num_qubits": n,
-                        "total_gates": int(total_gates),
-                        "want_statevector": bool(want_sv),
-                        "backend": backend_name,
-                        "fingerprint": fingerprint,
-                    }
+                if cache_enabled:
+                    with lock:
+                        result_cache[cache_key] = {
+                            "partition_id": pid,
+                            "status": status_entry.copy(),
+                            "out": out,
+                            "mem_bytes": int(need),
+                            "num_qubits": n,
+                            "total_gates": int(total_gates),
+                            "want_statevector": bool(want_sv),
+                            "backend": backend_name,
+                            "fingerprint": fingerprint,
+                        }
             except StatevectorSimulationError as exc:
                 elapsed = time.time() - start
                 status_entry = {
@@ -441,18 +447,19 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     exc,
                 )
                 init_state = None
-                with lock:
-                    result_cache[cache_key] = {
-                        "partition_id": pid,
-                        "status": status_entry.copy(),
-                        "out": None,
-                        "mem_bytes": int(need),
-                        "num_qubits": n,
-                        "total_gates": int(total_gates),
-                        "want_statevector": bool(want_sv),
-                        "backend": backend_name,
-                        "fingerprint": fingerprint,
-                    }
+                if cache_enabled:
+                    with lock:
+                        result_cache[cache_key] = {
+                            "partition_id": pid,
+                            "status": status_entry.copy(),
+                            "out": None,
+                            "mem_bytes": int(need),
+                            "num_qubits": n,
+                            "total_gates": int(total_gates),
+                            "want_statevector": bool(want_sv),
+                            "backend": backend_name,
+                            "fingerprint": fingerprint,
+                        }
             except Exception as e:
                 elapsed = time.time() - start
                 status_entry = {
@@ -475,18 +482,19 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     statuses[pid] = status_entry
                     _attach_peak_rss(status_entry)
                 init_state = None
-                with lock:
-                    result_cache[cache_key] = {
-                        "partition_id": pid,
-                        "status": status_entry.copy(),
-                        "out": None,
-                        "mem_bytes": int(need),
-                        "num_qubits": n,
-                        "total_gates": int(total_gates),
-                        "want_statevector": bool(want_sv),
-                        "backend": backend_name,
-                        "fingerprint": fingerprint,
-                    }
+                if cache_enabled:
+                    with lock:
+                        result_cache[cache_key] = {
+                            "partition_id": pid,
+                            "status": status_entry.copy(),
+                            "out": None,
+                            "mem_bytes": int(need),
+                            "num_qubits": n,
+                            "total_gates": int(total_gates),
+                            "want_statevector": bool(want_sv),
+                            "backend": backend_name,
+                            "fingerprint": fingerprint,
+                        }
             finally:
                 memgov.release(need)
 

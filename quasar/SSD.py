@@ -30,7 +30,7 @@ class PartitionNode:
             qasm = self.circuit.qasm()  # deprecated in some qiskit versions
         except Exception:
             qasm = str(self.circuit)
-        return _fingerprint(qasm + str(self.qubits))
+        return _fingerprint(qasm)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)

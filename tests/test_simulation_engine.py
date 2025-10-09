@@ -123,7 +123,7 @@ def test_execute_ssd_reuses_cached_partitions(monkeypatch: pytest.MonkeyPatch) -
     for idx in range(2):
         node = PartitionNode(
             id=idx,
-            qubits=[0],
+            qubits=[idx],
             circuit=shared_circuit,
             metrics={"num_qubits": 1, "gate_count": 0},
             backend="sv",
@@ -139,3 +139,41 @@ def test_execute_ssd_reuses_cached_partitions(monkeypatch: pytest.MonkeyPatch) -
     assert statuses[1]["cache_source_partition"] == statuses[0]["partition"]
     assert result["meta"]["cache_hits"] == 1
     assert result["meta"]["cache_misses"] == 1
+
+
+def test_execute_ssd_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def _runner(name: str, circuit, initial_state, **_: object):
+        calls.append((name, getattr(circuit, "partition_id", None), initial_state))
+        return [0, 1]
+
+    monkeypatch.setattr(sim, "_backend_runner", _runner)
+
+    ssd = SSD()
+    shared_circuit = _StableCircuit(1, "h")
+    for idx in range(2):
+        node = PartitionNode(
+            id=idx,
+            qubits=[idx],
+            circuit=shared_circuit,
+            metrics={"num_qubits": 1, "gate_count": 0},
+            backend="sv",
+        )
+        ssd.add(node)
+
+    cfg = ExecutionConfig(
+        max_workers=1,
+        heartbeat_sec=0.001,
+        stuck_warn_sec=0.01,
+        enable_partition_cache=False,
+    )
+
+    result = execute_ssd(ssd, cfg)
+
+    assert len(calls) == 2
+    statuses = result["results"]
+    assert statuses[0]["cache_hit"] is False
+    assert statuses[1]["cache_hit"] is False
+    assert result["meta"]["cache_hits"] == 0
+    assert result["meta"]["cache_misses"] == 0
