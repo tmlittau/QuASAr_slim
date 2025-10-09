@@ -140,6 +140,7 @@ def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
 def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
     cfg = cfg or PlannerConfig()
     annotated = SSD(meta=dict(ssd.meta))
+    seen_fingerprints: Dict[str, int] = {}
     annotated.meta["planner"] = {
         "max_ram_gb": cfg.max_ram_gb, "prefer_dd": cfg.prefer_dd,
         "hybrid_clifford_tail": cfg.hybrid_clifford_tail,
@@ -148,6 +149,12 @@ def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
     }
     for node in ssd.partitions:
         meta = dict(node.meta)
+        fp = node.compute_fingerprint()
+        meta["cache_key"] = fp
+        if fp in seen_fingerprints:
+            meta["cache_of"] = seen_fingerprints[fp]
+        else:
+            seen_fingerprints[fp] = node.id
         if meta.get("collapsed"):
             new_node = PartitionNode(
                 id=node.id,
@@ -170,6 +177,14 @@ def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
         hybrid = _consider_hybrid(node, cfg)
         if hybrid:
             for hn in hybrid:
+                hmeta = dict(hn.meta)
+                fp = hn.compute_fingerprint()
+                hmeta["cache_key"] = fp
+                if fp in seen_fingerprints:
+                    hmeta["cache_of"] = seen_fingerprints[fp]
+                else:
+                    seen_fingerprints[fp] = hn.id
+                hn.meta = hmeta
                 annotated.add(hn)
             continue
         b, why = _choose_backend(node.metrics, cfg)

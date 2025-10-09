@@ -25,6 +25,14 @@ except Exception:  # pragma: no cover - psutil not installed
 
 LOGGER = logging.getLogger(__name__)
 
+
+class _CacheEntry:
+    def __init__(self, owner_id: int) -> None:
+        self.owner_id = owner_id
+        self.event = threading.Event()
+        self.status: Optional[Dict[str, Any]] = None
+        self.output = None
+
 @dataclass
 class ExecutionConfig:
     max_ram_gb: float = 64.0
@@ -181,6 +189,22 @@ def _estimate_bytes_for_partition(backend: str, n_qubits: int, want_sv: bool) ->
     # Fallback
     return 128 * 1024 * 1024
 
+
+def _clone_statevector(state):
+    if state is None:
+        return None
+    copy_method = getattr(state, "copy", None)
+    if callable(copy_method):
+        try:
+            return copy_method()
+        except Exception:
+            pass
+    if isinstance(state, list):
+        return list(state)
+    if isinstance(state, tuple):
+        return tuple(state)
+    return state
+
 def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
     cpu_count = None
@@ -204,6 +228,9 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
 
     # per-partition progress counters
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
+
+    cache_entries: Dict[str, _CacheEntry] = {}
+    cache_lock = threading.Lock()
 
     chains = _group_chains(ssd)
     if cfg.max_workers <= 0:
@@ -233,6 +260,65 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
         for idx, node in enumerate(nodes):
             pid = node.id
             n = int(node.metrics.get("num_qubits", 0))
+
+            cache_key = node.meta.get("cache_key") if node.meta else None
+            cache_entry: Optional[_CacheEntry] = None
+            is_cache_owner = False
+            if cache_key:
+                with cache_lock:
+                    entry = cache_entries.get(cache_key)
+                    if entry is None:
+                        cache_entry = _CacheEntry(owner_id=pid)
+                        cache_entries[cache_key] = cache_entry
+                        is_cache_owner = True
+                    else:
+                        cache_entry = entry
+                        if entry.owner_id == pid:
+                            is_cache_owner = True
+            if cache_entry is not None and not is_cache_owner:
+                wait_event = cache_entry.event
+                total_gates = node.metrics.get("gate_count") or _count_gates(node.circuit)
+                wait_event.wait()
+                cached_status = dict(cache_entry.status or {})
+                cached_output = cache_entry.output
+                now = time.time()
+                with lock:
+                    progress[pid] = {"done": int(total_gates), "total": int(total_gates), "last_ts": now}
+                    status_copy = {
+                        k: v
+                        for k, v in cached_status.items()
+                        if k
+                        not in {
+                            "chain_id",
+                            "seq_index",
+                            "total_gates",
+                            "num_qubits",
+                            "mem_bytes",
+                            "want_statevector",
+                        }
+                    }
+                    status_copy.update(
+                        {
+                            "status": cached_status.get("status", "cached"),
+                            "backend": node.backend,
+                            "elapsed_s": cached_status.get("elapsed_s"),
+                            "wall_s_measured": cached_status.get("wall_s_measured"),
+                            "statevector_len": cached_status.get("statevector_len"),
+                            "chain_id": cid,
+                            "seq_index": node.meta.get("seq_index", 0) if node.meta else 0,
+                            "total_gates": int(total_gates),
+                            "num_qubits": n,
+                            "want_statevector": cached_status.get("want_statevector", False),
+                            "mem_bytes": 0,
+                            "cached_from": cache_entry.owner_id,
+                        }
+                    )
+                    if cache_key:
+                        status_copy["cache_key"] = cache_key
+                    statuses[pid] = status_copy
+                    _attach_peak_rss(statuses[pid])
+                init_state = _clone_statevector(cached_output)
+                continue
 
             # Lookahead: decide whether we must materialize an SV at the end of this node.
             next_backend = None
@@ -269,6 +355,10 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "want_statevector": want_sv,
                     "mem_bytes": int(need),
                 }
+                if cache_key:
+                    statuses[pid]["cache_key"] = cache_key
+                if cache_entry is not None and cache_entry.owner_id != pid:
+                    statuses[pid]["cached_from"] = cache_entry.owner_id
 
             try:
                 out = _backend_runner(
@@ -279,6 +369,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     want_statevector=want_sv,
                 )
                 elapsed = time.time() - start
+                init_state = out
                 with lock:
                     # mark all gates as done on success (if backend never reported)
                     pr = progress.get(pid, {})
@@ -299,8 +390,16 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "want_statevector": want_sv,
                         "mem_bytes": int(need),
                     }
+                    if cache_key:
+                        statuses[pid]["cache_key"] = cache_key
+                    if cache_entry is not None and cache_entry.owner_id != pid:
+                        statuses[pid]["cached_from"] = cache_entry.owner_id
                     _attach_peak_rss(statuses[pid])
-                init_state = out
+                if cache_key and cache_entry is not None and cache_entry.owner_id == pid:
+                    with cache_lock:
+                        cache_entry.status = dict(statuses[pid])
+                        cache_entry.output = _clone_statevector(init_state)
+                        cache_entry.event.set()
             except StatevectorSimulationError as exc:
                 elapsed = time.time() - start
                 with lock:
@@ -323,6 +422,10 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "mem_bytes": int(need),
                         "mem_bytes_estimated": int(need),
                     }
+                    if cache_key:
+                        statuses[pid]["cache_key"] = cache_key
+                    if cache_entry is not None and cache_entry.owner_id != pid:
+                        statuses[pid]["cached_from"] = cache_entry.owner_id
                     _attach_peak_rss(statuses[pid])
                 LOGGER.warning(
                     "Partition %s on backend %s fell back to estimate: %s",
@@ -331,6 +434,11 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     exc,
                 )
                 init_state = None
+                if cache_key and cache_entry is not None and cache_entry.owner_id == pid:
+                    with cache_lock:
+                        cache_entry.status = dict(statuses[pid])
+                        cache_entry.output = None
+                        cache_entry.event.set()
             except Exception as e:
                 elapsed = time.time() - start
                 with lock:
@@ -347,8 +455,17 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "want_statevector": want_sv,
                         "mem_bytes": int(need),
                     }
+                    if cache_key:
+                        statuses[pid]["cache_key"] = cache_key
+                    if cache_entry is not None and cache_entry.owner_id != pid:
+                        statuses[pid]["cached_from"] = cache_entry.owner_id
                     _attach_peak_rss(statuses[pid])
                 init_state = None
+                if cache_key and cache_entry is not None and cache_entry.owner_id == pid:
+                    with cache_lock:
+                        cache_entry.status = dict(statuses[pid])
+                        cache_entry.output = None
+                        cache_entry.event.set()
             finally:
                 memgov.release(need)
 
