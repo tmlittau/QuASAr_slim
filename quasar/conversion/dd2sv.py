@@ -6,8 +6,13 @@ import numpy as np
 def dd_to_statevector(dd_source: Any) -> Optional[np.ndarray]:
     try:
         import mqt.ddsim as ddsim  # type: ignore
-        sim = ddsim.DDSIMProvider().get_backend('qasm_simulator')
-        job = sim.run(dd_source, shots=0)
+        provider = ddsim.DDSIMProvider()
+        try:
+            sim = provider.get_backend('statevector_simulator')
+            job = sim.run(dd_source)
+        except Exception:
+            sim = provider.get_backend('qasm_simulator')
+            job = sim.run(dd_source, shots=0)
         res = job.result()
         if hasattr(res, "get_statevector"):
             sv = res.get_statevector(dd_source)
