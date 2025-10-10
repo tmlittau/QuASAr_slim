@@ -228,7 +228,17 @@ def _linear_plan(ssd: SSD, cfg: PlannerConfig) -> SSD:
         options = _plan_options_for_partition(node, cfg)
         if not options:
             continue
-        annotated.extend_plan(options[0], estimator)
+        best_option = None
+        best_cost = None
+        for option in options:
+            option_cost = 0.0
+            for candidate in option:
+                option_cost += SSD._estimate_node_cost(candidate, estimator)
+            if best_cost is None or option_cost < best_cost:
+                best_cost = option_cost
+                best_option = option
+        if best_option:
+            annotated.extend_plan(best_option, estimator)
     return annotated
 
 
