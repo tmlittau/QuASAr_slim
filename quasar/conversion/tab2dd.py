@@ -7,7 +7,10 @@ def tableau_to_dd(tableau_like: Any) -> Optional[Any]:
     try:
         from qiskit import QuantumCircuit
         if hasattr(tableau_like, "to_circuit"):
-            circuit = tableau_like.to_circuit()
+            try:
+                circuit = tableau_like.to_circuit()
+            except Exception:
+                circuit = None
             if isinstance(circuit, QuantumCircuit):
                 return circuit
         from qiskit.quantum_info import Statevector
