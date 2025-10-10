@@ -108,7 +108,7 @@ def calibrate(samples: List[DDSample]) -> dict:
     frontier_weight = float(coeffs[2] / gate_node_factor)
     rotation_weight = float(coeffs[3] / gate_node_factor)
     twoq_weight = float(coeffs[4] / gate_node_factor)
-    sparsity_discount = float(-coeffs[5] / gate_node_factor)
+    sparsity_discount = float(coeffs[5] / gate_node_factor)
 
     modifiers = []
     for metrics in feature_cache:
