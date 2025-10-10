@@ -5,10 +5,8 @@ from dataclasses import dataclass
 from .SSD import SSD, PartitionNode
 from .gate_metrics import circuit_metrics
 
-try:
-    from qiskit import QuantumCircuit
-except Exception:
-    QuantumCircuit = Any  # type: ignore
+from qiskit import QuantumCircuit
+
 
 @dataclass
 class AnalysisResult:

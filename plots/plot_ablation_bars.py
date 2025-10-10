@@ -158,6 +158,8 @@ def _plot_bars(
     ax.set_ylim(bottom=0)
     formatter = value_formatter if value_formatter is not None else (lambda value: f"{value:.2f}")
     for idx, value in enumerate(values):
+        if value == 1.0:
+            continue
         ax.text(idx, value, formatter(value), ha="center", va="bottom")
 
 

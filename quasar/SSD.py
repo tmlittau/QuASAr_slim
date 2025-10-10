@@ -4,10 +4,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Any, Optional
 import hashlib
 
-try:
-    from qiskit import QuantumCircuit
-except Exception:  # pragma: no cover
-    QuantumCircuit = Any  # type: ignore
+from qiskit import QuantumCircuit
 
 def _fingerprint(text: str) -> str:
     import hashlib
