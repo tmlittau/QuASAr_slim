@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from . import hybrid, disjoint, dd_friendly
+from .unified import generate_benchmark_circuit
 
 CIRCUIT_REGISTRY: Dict[str, Any] = {}
 CIRCUIT_REGISTRY.update(hybrid.CIRCUIT_REGISTRY)
@@ -17,6 +18,7 @@ __all__ = [
     "dd_friendly",
     "CIRCUIT_REGISTRY",
     "build",
+    "generate_benchmark_circuit",
 ]
 
 
