@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional, Callable, Tuple
 import threading, time, logging, sys, os, hashlib
 from collections import defaultdict
 
-from .SSD import SSD, PartitionNode
+from .qusd import Plan, QuSD
 from .backends.sv import (
     StatevectorBackend,
     StatevectorSimulationError,
@@ -140,9 +140,9 @@ def _backend_runner(
     except TypeError:
         return sv.run(circ, initial_state=initial_state)
 
-def _group_chains(ssd: SSD):
+def _group_chains(plan: Plan):
     chains = {}
-    for node in ssd.partitions:
+    for node in plan.qusds:
         meta = node.meta or {}
         chain_id = meta.get("chain_id", f"chain_{node.id}")
         seq = int(meta.get("seq_index", 0))
@@ -208,7 +208,7 @@ def _hash_statevector(state: Any) -> Optional[str]:
 
     return hashlib.sha256(payload).hexdigest()
 
-def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
+def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
     cpu_count = None
     if cfg.max_workers <= 0:
@@ -229,17 +229,17 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     lock = threading.Lock()
     done_evt = threading.Event()
 
-    # per-partition progress counters
+    # per-QuSD progress counters
     progress = defaultdict(lambda: {"done": 0, "total": 0, "last_ts": None})
     cache_stats = {"hits": 0, "misses": 0}
     cache_enabled = bool(getattr(cfg, "enable_partition_cache", True))
     result_cache: Dict[Tuple[str, str, bool, Optional[str]], Dict[str, Any]] = {}
 
-    chains = _group_chains(ssd)
+    chains = _group_chains(plan)
     if cfg.max_workers <= 0:
         sensitive_backends = {"sv", "dd"}
         has_sensitive = any(
-            str((node.backend or "sv")).lower() in sensitive_backends for node in ssd.partitions
+            str((node.backend or "sv")).lower() in sensitive_backends for node in plan.qusds
         )
         desired = 1 if has_sensitive else max(1, len(chains))
         if cpu_count is None:
@@ -257,7 +257,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                 pr["last_ts"] = now
         return cb
 
-    def run_chain(cid: str, nodes: List[PartitionNode]):
+    def run_chain(cid: str, nodes: List[QuSD]):
         init_state = None
         start_chain = time.time()
         for idx, node in enumerate(nodes):
@@ -310,7 +310,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         "chain_id": cid,
                         "seq_index": node.meta.get("seq_index", 0),
                         "cache_hit": True,
-                        "cache_source_partition": cached_entry["partition_id"],
+                        "cache_source_qusd": cached_entry["qusd_id"],
                         "cache_fingerprint": fingerprint,
                         "total_gates": int(total_gates),
                         "num_qubits": n,
@@ -336,7 +336,8 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     }
                     statuses[pid] = status_entry
                     cache_stats["hits"] += 1
-                init_state = cached_entry.get("out")
+                node.out_state = cached_entry.get("out")
+                init_state = node.out_state
                 continue
 
             node.meta["cache_hit"] = False
@@ -361,7 +362,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "want_statevector": bool(want_sv),
                     "mem_bytes": int(need),
                     "cache_hit": False,
-                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_source_qusd": node.meta.get("cache_source", pid),
                     "cache_fingerprint": fingerprint,
                 }
 
@@ -388,7 +389,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "want_statevector": bool(want_sv),
                     "mem_bytes": int(need),
                     "cache_hit": False,
-                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_source_qusd": node.meta.get("cache_source", pid),
                     "cache_fingerprint": fingerprint,
                 }
                 with lock:
@@ -399,11 +400,12 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                         pr["last_ts"] = time.time()
                     statuses[pid] = status_entry
                     _attach_peak_rss(status_entry)
+                node.out_state = out
                 init_state = out
                 if cache_enabled:
                     with lock:
                         result_cache[cache_key] = {
-                            "partition_id": pid,
+                            "qusd_id": pid,
                             "status": status_entry.copy(),
                             "out": out,
                             "mem_bytes": int(need),
@@ -430,7 +432,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "mem_bytes": int(need),
                     "mem_bytes_estimated": int(need),
                     "cache_hit": False,
-                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_source_qusd": node.meta.get("cache_source", pid),
                     "cache_fingerprint": fingerprint,
                 }
                 with lock:
@@ -441,16 +443,17 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     statuses[pid] = status_entry
                     _attach_peak_rss(status_entry)
                 LOGGER.warning(
-                    "Partition %s on backend %s fell back to estimate: %s",
+                    "QuSD %s on backend %s fell back to estimate: %s",
                     pid,
                     node.backend,
                     exc,
                 )
+                node.out_state = None
                 init_state = None
                 if cache_enabled:
                     with lock:
                         result_cache[cache_key] = {
-                            "partition_id": pid,
+                            "qusd_id": pid,
                             "status": status_entry.copy(),
                             "out": None,
                             "mem_bytes": int(need),
@@ -475,17 +478,18 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
                     "want_statevector": bool(want_sv),
                     "mem_bytes": int(need),
                     "cache_hit": False,
-                    "cache_source_partition": node.meta.get("cache_source", pid),
+                    "cache_source_qusd": node.meta.get("cache_source", pid),
                     "cache_fingerprint": fingerprint,
                 }
                 with lock:
                     statuses[pid] = status_entry
                     _attach_peak_rss(status_entry)
+                node.out_state = None
                 init_state = None
                 if cache_enabled:
                     with lock:
                         result_cache[cache_key] = {
-                            "partition_id": pid,
+                            "qusd_id": pid,
                             "status": status_entry.copy(),
                             "out": None,
                             "mem_bytes": int(need),
@@ -545,7 +549,11 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
     wall = time.time() - t0
     with lock:
         results = [
-            {"partition": pid, **st, **({"done_gates": progress.get(pid, {}).get("done", 0)} if isinstance(pid, int) else {})}
+            {
+                "qusd_id": pid,
+                **st,
+                **({"done_gates": progress.get(pid, {}).get("done", 0)} if isinstance(pid, int) else {}),
+            }
             for pid, st in sorted(((k, v) for k, v in statuses.items() if isinstance(k, int)), key=lambda kv: kv[0])
         ]
     peak_rss = 0
@@ -570,3 +578,7 @@ def execute_ssd(ssd: SSD, cfg: Optional[ExecutionConfig] = None) -> Dict[str, An
         "results": results,
         "meta": meta,
     }
+
+
+# Backwards compatibility alias for legacy callers.
+execute_ssd = execute_plan

@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 from benchmarks import CIRCUIT_REGISTRY, build as build_circuit
 from quasar.analyzer import analyze
-from quasar.ssd_visualization import visualize_ssd
+from quasar.ssd_visualization import visualize_plan
 
 
 def _parse_param(values: list[str]) -> Dict[str, Any]:
@@ -27,7 +27,7 @@ def _parse_param(values: list[str]) -> Dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Build a benchmark circuit and visualise the resulting SSD graph. "
+            "Build a benchmark circuit and visualise the resulting plan graph. "
             "This requires networkx and matplotlib to be installed."
         )
     )
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     circuit = build_circuit(args.kind, **params)
 
     analysis = analyze(circuit)
-    visualize_ssd(analysis.ssd, show=not args.no_show, save_path=args.save)
+    visualize_plan(analysis.ssd, show=not args.no_show, save_path=args.save)
     return 0
 
 
