@@ -46,7 +46,7 @@ from time import perf_counter
 import numpy as np
 from qiskit import QuantumCircuit
 
-from quasar.SSD import PartitionNode, SSD
+from quasar.qusd import QuSD, Plan
 from quasar.backends.sv import estimate_sv_bytes
 from quasar.analyzer import analyze
 from quasar.cost_estimator import CostEstimator
@@ -184,13 +184,13 @@ def build_ablation_circuit(
     return qc, specs
 
 
-def _collapse_to_single_partition(ssd: SSD, circuit: QuantumCircuit) -> SSD:
-    merged = SSD(meta=dict(ssd.meta))
+def _collapse_to_single_partition(ssd: Plan, circuit: QuantumCircuit) -> Plan:
+    merged = Plan(meta=dict(ssd.meta))
     merged.meta["components"] = 1
     stitched = circuit.copy()
     metrics = circuit_metrics(stitched)
     merged.add(
-        PartitionNode(
+        QuSD(
             id=0,
             qubits=list(range(circuit.num_qubits)),
             circuit=stitched,
@@ -236,17 +236,17 @@ class VariantRecord:
 class _PendingEstimate:
     """Track variants waiting for a calibrated execution estimate."""
 
-    ssd: SSD
+    plan: Plan
     execution: Optional[Dict[str, object]]
     prefer_estimate: bool
     record: VariantRecord
 
 
-def _partition_payload(ssd: SSD) -> List[Dict[str, object]]:
+def _partition_payload(ssd: Plan) -> List[Dict[str, object]]:
     return [partition.to_dict() for partition in ssd.partitions]
 
 
-def _amp_ops_for_node(node: PartitionNode, estimator: CostEstimator) -> float:
+def _amp_ops_for_node(node: QuSD, estimator: CostEstimator) -> float:
     metrics = node.metrics or {}
     try:
         n = int(metrics.get("num_qubits", 0) or 0)
@@ -267,7 +267,7 @@ def _amp_ops_for_node(node: PartitionNode, estimator: CostEstimator) -> float:
 
 
 def _accumulate_sv_stats(
-    ssd: SSD, execution: Optional[Dict[str, object]], estimator: CostEstimator
+    ssd: Plan, execution: Optional[Dict[str, object]], estimator: CostEstimator
 ) -> Tuple[float, float]:
     if not execution or not isinstance(execution, dict):
         return 0.0, 0.0
@@ -286,7 +286,7 @@ def _accumulate_sv_stats(
         backend = str(entry.get("backend", "sv")).lower()
         if backend != "sv":
             continue
-        pid = entry.get("partition")
+        pid = entry.get("qusd_id")
         try:
             pid_int = int(pid)
         except Exception:
@@ -335,7 +335,7 @@ def _refresh_pending_estimates(
     completed: List[str] = []
     for name, info in pending.items():
         summary = _summarise_execution(
-            info.ssd,
+            info.plan,
             info.execution,
             estimator,
             fallback_time_per_amp=fallback_time_per_amp,
@@ -356,7 +356,7 @@ def _refresh_pending_estimates(
 
 
 def _summarise_execution(
-    ssd: SSD,
+    plan: Plan,
     execution: Optional[Dict[str, object]],
     estimator: CostEstimator,
     *,
@@ -429,7 +429,7 @@ def _summarise_execution(
 
     if max_mem <= 0:
         est_mem = 0
-        for node in ssd.partitions:
+        for node in plan.partitions:
             try:
                 n = int(node.metrics.get("num_qubits", 0) or 0)
             except Exception:
@@ -440,7 +440,7 @@ def _summarise_execution(
             max_mem_estimated = True
 
     sv_amp_ops = 0.0
-    for node in ssd.partitions:
+    for node in plan.partitions:
         backend = str(node.backend or "sv").lower()
         if backend != "sv":
             continue
@@ -562,7 +562,7 @@ def run_three_way_ablation(
     )
     if summary_full and summary_full.get("estimate_unavailable"):
         pending_estimates["full"] = _PendingEstimate(
-            ssd=planned_full,
+            plan=planned_full,
             execution=exec_full,
             prefer_estimate=_variant_needs_estimate(exec_full),
             record=results[-1],
@@ -601,7 +601,7 @@ def run_three_way_ablation(
     )
     if summary_nodisjoint and summary_nodisjoint.get("estimate_unavailable"):
         pending_estimates["no_disjoint"] = _PendingEstimate(
-            ssd=planned_nodisjoint,
+            plan=planned_nodisjoint,
             execution=exec_nodisjoint,
             prefer_estimate=_variant_needs_estimate(exec_nodisjoint),
             record=results[-1],
@@ -641,7 +641,7 @@ def run_three_way_ablation(
     )
     if summary_nohybrid and summary_nohybrid.get("estimate_unavailable"):
         pending_estimates["no_hybrid"] = _PendingEstimate(
-            ssd=planned_nohybrid,
+            plan=planned_nohybrid,
             execution=exec_nohybrid,
             prefer_estimate=_variant_needs_estimate(exec_nohybrid),
             record=results[-1],
@@ -695,7 +695,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         help="Comma separated tail pattern (values: random,sparse). Defaults to alternating random/sparse.",
     )
     parser.add_argument("--seed", type=int, default=1, help="Random seed for the circuit constructor")
-    parser.add_argument("--execute", action="store_true", help="Execute the planned SSDs via the simulation engine")
+    parser.add_argument(
+        "--execute", action="store_true", help="Execute the planned plans via the simulation engine"
+    )
     parser.add_argument(
         "--max-workers",
         type=int,

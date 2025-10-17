@@ -15,8 +15,8 @@ if str(PROJECT_ROOT) not in sys.path:
 import os
 
 import quasar.simulation_engine as sim
-from quasar.SSD import PartitionNode, SSD
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.qusd import Plan, QuSD
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 
 class _DummyCircuit:
@@ -39,18 +39,18 @@ class _StableCircuit(_DummyCircuit):
         return f"StableCircuit({self._label})"
 
 
-def _make_ssd(num_partitions: int, backend: str = "sv") -> SSD:
-    ssd = SSD()
-    for idx in range(num_partitions):
-        node = PartitionNode(
+def _make_plan(num_qusds: int, backend: str = "sv") -> Plan:
+    plan = Plan()
+    for idx in range(num_qusds):
+        qusd = QuSD(
             id=idx,
             qubits=[idx],
             circuit=_DummyCircuit(1),
             metrics={"num_qubits": 1, "gate_count": 0},
             backend=backend,
         )
-        ssd.add(node)
-    return ssd
+        plan.add(qusd)
+    return plan
 
 
 @pytest.fixture(autouse=True)
@@ -63,53 +63,53 @@ def _patch_backend_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "num_partitions,cpu_count",
+    "num_qusds,cpu_count",
     [
         (3, 8),
         (6, 16),
         (12, 4),
     ],
 )
-def test_execute_ssd_auto_workers_serialises_sensitive_backends(
+def test_execute_plan_auto_workers_serialises_sensitive_backends(
     monkeypatch: pytest.MonkeyPatch,
-    num_partitions: int,
+    num_qusds: int,
     cpu_count: int,
 ) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
 
     cfg = ExecutionConfig(max_workers=0, heartbeat_sec=0.001, stuck_warn_sec=0.01)
-    ssd = _make_ssd(num_partitions)
+    plan = _make_plan(num_qusds)
 
-    execute_ssd(ssd, cfg)
+    execute_plan(plan, cfg)
 
     assert cfg.max_workers == 1
 
 
 @pytest.mark.parametrize(
-    "num_partitions,cpu_count,expected",
+    "num_qusds,cpu_count,expected",
     [
         (3, 8, 3),
         (6, 16, 6),
         (12, 4, 4),
     ],
 )
-def test_execute_ssd_auto_workers_tracks_available_parallelism_for_tableau(
+def test_execute_plan_auto_workers_tracks_available_parallelism_for_tableau(
     monkeypatch: pytest.MonkeyPatch,
-    num_partitions: int,
+    num_qusds: int,
     cpu_count: int,
     expected: int,
 ) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
 
     cfg = ExecutionConfig(max_workers=0, heartbeat_sec=0.001, stuck_warn_sec=0.01)
-    ssd = _make_ssd(num_partitions, backend="tableau")
+    plan = _make_plan(num_qusds, backend="tableau")
 
-    execute_ssd(ssd, cfg)
+    execute_plan(plan, cfg)
 
     assert cfg.max_workers == expected
 
 
-def test_execute_ssd_reuses_cached_partitions(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_plan_reuses_cached_qusds(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
     def _runner(name: str, circuit, initial_state, **_: object):
@@ -118,30 +118,34 @@ def test_execute_ssd_reuses_cached_partitions(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(sim, "_backend_runner", _runner)
 
-    ssd = SSD()
+    plan = Plan()
     shared_circuit = _StableCircuit(1, "h")
     for idx in range(2):
-        node = PartitionNode(
+        qusd = QuSD(
             id=idx,
             qubits=[idx],
             circuit=shared_circuit,
             metrics={"num_qubits": 1, "gate_count": 0},
             backend="sv",
         )
-        ssd.add(node)
+        plan.add(qusd)
 
-    result = execute_ssd(ssd, ExecutionConfig(max_workers=1, heartbeat_sec=0.001, stuck_warn_sec=0.01))
+    result = execute_plan(
+        plan, ExecutionConfig(max_workers=1, heartbeat_sec=0.001, stuck_warn_sec=0.01)
+    )
 
     assert len(calls) == 1
     statuses = result["results"]
     assert statuses[0]["cache_hit"] is False
     assert statuses[1]["cache_hit"] is True
-    assert statuses[1]["cache_source_partition"] == statuses[0]["partition"]
+    assert statuses[1]["cache_source_qusd"] == statuses[0]["qusd_id"]
+    assert statuses[0]["partition"] == statuses[0]["qusd_id"]
+    assert statuses[1]["partition"] == statuses[1]["qusd_id"]
     assert result["meta"]["cache_hits"] == 1
     assert result["meta"]["cache_misses"] == 1
 
 
-def test_execute_ssd_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_plan_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
     def _runner(name: str, circuit, initial_state, **_: object):
@@ -150,17 +154,17 @@ def test_execute_ssd_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sim, "_backend_runner", _runner)
 
-    ssd = SSD()
+    plan = Plan()
     shared_circuit = _StableCircuit(1, "h")
     for idx in range(2):
-        node = PartitionNode(
+        qusd = QuSD(
             id=idx,
             qubits=[idx],
             circuit=shared_circuit,
             metrics={"num_qubits": 1, "gate_count": 0},
             backend="sv",
         )
-        ssd.add(node)
+        plan.add(qusd)
 
     cfg = ExecutionConfig(
         max_workers=1,
@@ -169,11 +173,13 @@ def test_execute_ssd_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
         enable_partition_cache=False,
     )
 
-    result = execute_ssd(ssd, cfg)
+    result = execute_plan(plan, cfg)
 
     assert len(calls) == 2
     statuses = result["results"]
     assert statuses[0]["cache_hit"] is False
     assert statuses[1]["cache_hit"] is False
+    assert statuses[0]["partition"] == statuses[0]["qusd_id"]
+    assert statuses[1]["partition"] == statuses[1]["qusd_id"]
     assert result["meta"]["cache_hits"] == 0
     assert result["meta"]["cache_misses"] == 0

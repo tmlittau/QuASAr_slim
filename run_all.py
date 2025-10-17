@@ -8,7 +8,7 @@ import logging
 from benchmarks import build as build_circuit
 from quasar.analyzer import analyze
 from quasar.planner import plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 
 def load_circuit(kind: str, **kwargs):
@@ -40,14 +40,22 @@ def main():
     logging.info("Found %d partitions", len(analysis.ssd))
 
     logging.info("Planning")
-    ssd = plan(analysis.ssd)
+    planned = plan(analysis.ssd)
 
-    logging.info("Executing SSD with multithreading")
+    logging.info("Executing plan with multithreading")
     cfg = ExecutionConfig(max_ram_gb=args.max_ram_gb, max_workers=args.max_workers,
                           heartbeat_sec=args.heartbeat_sec, stuck_warn_sec=args.stuck_warn_sec)
-    exec_payload = execute_ssd(ssd, cfg)
+    exec_payload = execute_plan(planned, cfg)
 
-    payload = {"analysis": {"global": analysis.metrics_global, "ssd": ssd.to_dict()}, "execution": exec_payload}
+    plan_payload = planned.to_dict()
+    payload = {
+        "analysis": {
+            "global": analysis.metrics_global,
+            "plan": plan_payload,
+            "ssd": plan_payload,
+        },
+        "execution": exec_payload,
+    }
     with open(args.out, "w") as f:
         json.dump(payload, f, indent=2)
     logging.info("Wrote %s", args.out)
