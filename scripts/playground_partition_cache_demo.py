@@ -5,8 +5,8 @@ import argparse
 import time
 from typing import Tuple
 
-from quasar.SSD import SSD, PartitionNode
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.qusd import Plan, QuSD
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 try:
     from qiskit import QuantumCircuit
@@ -33,31 +33,31 @@ def _build_partition_circuit(num_qubits: int, depth: int) -> QuantumCircuit:
     return qc
 
 
-def _build_disjoint_ssd(num_qubits: int, depth: int, backend: str) -> Tuple[SSD, int]:
+def _build_disjoint_plan(num_qubits: int, depth: int, backend: str) -> Tuple[Plan, int]:
     base = _build_partition_circuit(num_qubits, depth)
     gate_count = int(base.size())
 
-    ssd = SSD()
+    plan = Plan()
 
-    first = PartitionNode(
+    first = QuSD(
         id=0,
         qubits=list(range(num_qubits)),
         circuit=base,
         metrics={"num_qubits": num_qubits, "gate_count": gate_count},
         backend=backend,
     )
-    ssd.add(first)
+    plan.add(first)
 
-    second = PartitionNode(
+    second = QuSD(
         id=1,
         qubits=list(range(num_qubits, 2 * num_qubits)),
         circuit=base.copy(),
         metrics={"num_qubits": num_qubits, "gate_count": gate_count},
         backend=backend,
     )
-    ssd.add(second)
+    plan.add(second)
 
-    return ssd, gate_count
+    return plan, gate_count
 
 
 def _format_bytes(num_bytes: int | None) -> str:
@@ -117,7 +117,7 @@ def run_demo(args: argparse.Namespace) -> None:
         f"Building two disjoint partitions with {args.qubits_per_partition} qubits "
         f"and depth {args.depth} (backend={backend})"
     )
-    ssd, gate_count = _build_disjoint_ssd(args.qubits_per_partition, args.depth, backend)
+    plan, gate_count = _build_disjoint_plan(args.qubits_per_partition, args.depth, backend)
     print(
         f"Each partition contains {gate_count} gates; total circuit width is {2 * args.qubits_per_partition} qubits."
     )
@@ -130,7 +130,7 @@ def run_demo(args: argparse.Namespace) -> None:
             enable_partition_cache=enable_cache,
         )
         start = time.perf_counter()
-        result = execute_ssd(ssd, cfg)
+        result = execute_plan(plan.fork(), cfg)
         elapsed = time.perf_counter() - start
         return elapsed, result
 
@@ -150,8 +150,8 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     print(f"  peak RSS: {_format_bytes(result_off['meta'].get('peak_rss_bytes'))}")
 
-    # rebuild SSD so cached metadata does not leak between runs
-    ssd, _ = _build_disjoint_ssd(args.qubits_per_partition, args.depth, backend)
+    # rebuild plan so cached metadata does not leak between runs
+    plan, _ = _build_disjoint_plan(args.qubits_per_partition, args.depth, backend)
 
     elapsed_on, result_on = _execute(enable_cache=True)
     print("\nCaching enabled:")
@@ -169,12 +169,12 @@ def run_demo(args: argparse.Namespace) -> None:
     )
     print(f"  peak RSS: {_format_bytes(result_on['meta'].get('peak_rss_bytes'))}")
 
-    print("\nPer-partition summary (caching enabled run):")
+    print("\nPer-QuSD summary (caching enabled run):")
     for entry in result_on["results"]:
         print(
-            "  partition {partition}: backend={backend} qubits={num_qubits} cache_hit={cache_hit} "
+            "  qusd {qusd}: backend={backend} qubits={num_qubits} cache_hit={cache_hit} "
             "elapsed={elapsed_s:.2f} s".format(
-                partition=entry.get("partition"),
+                qusd=entry.get("qusd_id"),
                 num_qubits=entry.get("num_qubits"),
                 cache_hit=entry.get("cache_hit"),
                 elapsed_s=float(entry.get("elapsed_s") or 0.0),

@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from quasar.analyzer import analyze
-from quasar.SSD import SSD, PartitionNode
+from quasar.qusd import Plan, QuSD
 from quasar.cost_estimator import CostEstimator
 from quasar.planner import PlannerConfig, plan
 import quasar.planner as planner_mod
@@ -116,16 +116,16 @@ def test_no_disjoint_variant_forces_statevector(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_summarise_execution_prefers_peak_rss() -> None:
-    ssd = SSD()
+    plan = Plan()
     qc = QuantumCircuit(1)
-    node = PartitionNode(
+    node = QuSD(
         id=0,
         qubits=[0],
         circuit=qc,
         metrics={"num_qubits": 1, "num_gates": 1, "two_qubit_gates": 0},
         backend="sv",
     )
-    ssd.add(node)
+    plan.add(node)
 
     execution = {
         "results": [
@@ -142,7 +142,7 @@ def test_summarise_execution_prefers_peak_rss() -> None:
     }
 
     estimator = CostEstimator.from_planner_config(PlannerConfig())
-    summary = ras._summarise_execution(ssd, execution, estimator)
+    summary = ras._summarise_execution(plan, execution, estimator)
     assert summary is not None
     assert summary["max_mem_bytes"] == 10 * 1024**2
     assert summary["max_mem_estimated"] is False
@@ -150,21 +150,21 @@ def test_summarise_execution_prefers_peak_rss() -> None:
 
 
 def test_pending_estimate_refreshed_after_calibration() -> None:
-    ssd = SSD()
+    plan = Plan()
     qc = QuantumCircuit(1)
-    node = PartitionNode(
+    node = QuSD(
         id=0,
         qubits=[0],
         circuit=qc,
         metrics={"num_qubits": 1, "num_gates": 1, "two_qubit_gates": 0},
         backend="sv",
     )
-    ssd.add(node)
+    plan.add(node)
 
     execution = {
         "results": [
             {
-                "partition": 0,
+                "qusd_id": 0,
                 "status": "estimated",
                 "backend": "sv",
                 "elapsed_s": 0.05,
@@ -176,7 +176,7 @@ def test_pending_estimate_refreshed_after_calibration() -> None:
 
     estimator = CostEstimator.from_planner_config(PlannerConfig())
     summary = ras._summarise_execution(
-        ssd,
+        plan,
         execution,
         estimator,
         fallback_time_per_amp=None,
@@ -193,7 +193,7 @@ def test_pending_estimate_refreshed_after_calibration() -> None:
     )
     pending = {
         "pending": ras._PendingEstimate(
-            ssd=ssd,
+            plan=plan,
             execution=execution,
             prefer_estimate=True,
             record=record,

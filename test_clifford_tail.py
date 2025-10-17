@@ -11,7 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover
 from quasar.analyzer import analyze
 from quasar.backends.sv import StatevectorBackend
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 
 def test_hybrid_prefix_metrics():
@@ -109,13 +109,13 @@ def main():
     sv_full = StatevectorBackend().run(circ)
     analysis = analyze(circ)
     cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=16.0)
-    ssd = plan(analysis.ssd, cfg)
-    exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=8.0))
+    plan_result = plan(analysis.ssd, cfg)
+    exec_payload = execute_plan(plan_result, ExecutionConfig(max_ram_gb=8.0))
     assert sv_full is not None
     sv_direct = StatevectorBackend().run(circ)
     assert np.allclose(sv_full, sv_direct, atol=1e-8)
     print("Planned nodes:")
-    for p in ssd.partitions:
+    for p in plan_result.partitions:
         print(f"  node {p.id}: backend={p.backend}, chain={p.meta.get('chain_id')} seq={p.meta.get('seq_index')} reason={p.meta.get('planner_reason')}")
     print("OK: SV baseline consistent. (Hybrid split decision visible above.)")
 
