@@ -139,6 +139,8 @@ def test_execute_plan_reuses_cached_qusds(monkeypatch: pytest.MonkeyPatch) -> No
     assert statuses[0]["cache_hit"] is False
     assert statuses[1]["cache_hit"] is True
     assert statuses[1]["cache_source_qusd"] == statuses[0]["qusd_id"]
+    assert statuses[0]["partition"] == statuses[0]["qusd_id"]
+    assert statuses[1]["partition"] == statuses[1]["qusd_id"]
     assert result["meta"]["cache_hits"] == 1
     assert result["meta"]["cache_misses"] == 1
 
@@ -177,5 +179,7 @@ def test_execute_plan_cache_disable(monkeypatch: pytest.MonkeyPatch) -> None:
     statuses = result["results"]
     assert statuses[0]["cache_hit"] is False
     assert statuses[1]["cache_hit"] is False
+    assert statuses[0]["partition"] == statuses[0]["qusd_id"]
+    assert statuses[1]["partition"] == statuses[1]["qusd_id"]
     assert result["meta"]["cache_hits"] == 0
     assert result["meta"]["cache_misses"] == 0

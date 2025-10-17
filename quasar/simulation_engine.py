@@ -309,6 +309,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                     {
                         "chain_id": cid,
                         "seq_index": node.meta.get("seq_index", 0),
+                        "partition": pid,
                         "cache_hit": True,
                         "cache_source_qusd": cached_entry["qusd_id"],
                         "cache_fingerprint": fingerprint,
@@ -354,6 +355,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                 statuses[pid] = {
                     "status": "running",
                     "backend": node.backend,
+                    "partition": pid,
                     "start_ts": start,
                     "chain_id": cid,
                     "seq_index": node.meta.get("seq_index", 0),
@@ -379,6 +381,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                 status_entry = {
                     "status": "ok" if success else "failed",
                     "backend": node.backend,
+                    "partition": pid,
                     "elapsed_s": elapsed,
                     "wall_s_measured": elapsed,
                     "statevector_len": None if out is None else len(out),
@@ -406,6 +409,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                     with lock:
                         result_cache[cache_key] = {
                             "qusd_id": pid,
+                            "partition": pid,
                             "status": status_entry.copy(),
                             "out": out,
                             "mem_bytes": int(need),
@@ -420,6 +424,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                 status_entry = {
                     "status": "estimated",
                     "backend": node.backend,
+                    "partition": pid,
                     "elapsed_s": elapsed,
                     "wall_s_measured": elapsed,
                     "statevector_len": None,
@@ -454,6 +459,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                     with lock:
                         result_cache[cache_key] = {
                             "qusd_id": pid,
+                            "partition": pid,
                             "status": status_entry.copy(),
                             "out": None,
                             "mem_bytes": int(need),
@@ -468,6 +474,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                 status_entry = {
                     "status": "error",
                     "backend": node.backend,
+                    "partition": pid,
                     "elapsed_s": elapsed,
                     "wall_s_measured": elapsed,
                     "error": f"{type(e).__name__}: {e}",
@@ -490,6 +497,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
                     with lock:
                         result_cache[cache_key] = {
                             "qusd_id": pid,
+                            "partition": pid,
                             "status": status_entry.copy(),
                             "out": None,
                             "mem_bytes": int(need),
@@ -551,6 +559,7 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
         results = [
             {
                 "qusd_id": pid,
+                "partition": st.get("partition", pid),
                 **st,
                 **({"done_gates": progress.get(pid, {}).get("done", 0)} if isinstance(pid, int) else {}),
             }
