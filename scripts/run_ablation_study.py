@@ -27,7 +27,7 @@ Example::
 
     circuit, blocks = ras.build_ablation_circuit(num_components=3)
     summary = ras.run_three_way_ablation(circuit)
-    print(summary["variants"][0]["partitions"])  # planned partitions
+    print(summary["variants"][0]["qusds"])  # planned QuSDs
 
 The ``main`` entry point offers a thin CLI around these helpers and stores the
 results in JSON form for downstream analysis.
@@ -52,7 +52,7 @@ from quasar.analyzer import analyze
 from quasar.cost_estimator import CostEstimator
 from quasar.gate_metrics import circuit_metrics
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 
 logger = logging.getLogger(__name__)
@@ -184,8 +184,8 @@ def build_ablation_circuit(
     return qc, specs
 
 
-def _collapse_to_single_partition(ssd: Plan, circuit: QuantumCircuit) -> Plan:
-    merged = Plan(meta=dict(ssd.meta))
+def _collapse_to_single_partition(plan: Plan, circuit: QuantumCircuit) -> Plan:
+    merged = Plan(meta=dict(plan.meta))
     merged.meta["components"] = 1
     stitched = circuit.copy()
     metrics = circuit_metrics(stitched)
@@ -209,7 +209,7 @@ def _collapse_to_single_partition(ssd: Plan, circuit: QuantumCircuit) -> Plan:
 class VariantRecord:
     name: str
     planner: PlannerConfig
-    partitions: List[Dict[str, object]]
+    qusds: List[Dict[str, object]]
     execution: Optional[Dict[str, object]] = None
     summary: Optional[Dict[str, object]] = None
 
@@ -223,7 +223,7 @@ class VariantRecord:
                 "conv_amp_ops_factor": self.planner.conv_amp_ops_factor,
                 "sv_twoq_factor": self.planner.sv_twoq_factor,
             },
-            "partitions": self.partitions,
+            "qusds": self.qusds,
         }
         if self.execution is not None:
             payload["execution"] = self.execution
@@ -242,8 +242,8 @@ class _PendingEstimate:
     record: VariantRecord
 
 
-def _partition_payload(ssd: Plan) -> List[Dict[str, object]]:
-    return [partition.to_dict() for partition in ssd.partitions]
+def _partition_payload(plan: Plan) -> List[Dict[str, object]]:
+    return [qusd.to_dict() for qusd in plan.qusds]
 
 
 def _amp_ops_for_node(node: QuSD, estimator: CostEstimator) -> float:
@@ -267,14 +267,14 @@ def _amp_ops_for_node(node: QuSD, estimator: CostEstimator) -> float:
 
 
 def _accumulate_sv_stats(
-    ssd: Plan, execution: Optional[Dict[str, object]], estimator: CostEstimator
+    plan: Plan, execution: Optional[Dict[str, object]], estimator: CostEstimator
 ) -> Tuple[float, float]:
     if not execution or not isinstance(execution, dict):
         return 0.0, 0.0
     results = execution.get("results")
     if not isinstance(results, Iterable):
         return 0.0, 0.0
-    lookup = {node.id: node for node in ssd.partitions}
+    lookup = {node.id: node for node in plan.qusds}
     total_ops = 0.0
     total_time = 0.0
     for entry in results:
@@ -429,7 +429,7 @@ def _summarise_execution(
 
     if max_mem <= 0:
         est_mem = 0
-        for node in plan.partitions:
+        for node in plan.qusds:
             try:
                 n = int(node.metrics.get("num_qubits", 0) or 0)
             except Exception:
@@ -440,7 +440,7 @@ def _summarise_execution(
             max_mem_estimated = True
 
     sv_amp_ops = 0.0
-    for node in plan.partitions:
+    for node in plan.qusds:
         backend = str(node.backend or "sv").lower()
         if backend != "sv":
             continue
@@ -528,11 +528,11 @@ def run_three_way_ablation(
     analysis_start = perf_counter()
     analysis = analyze(circuit)
     logger.info(
-        "Completed analysis in %.2fs with %s partitions",
+        "Completed analysis in %.2fs with %s QuSDs",
         perf_counter() - analysis_start,
-        len(analysis.ssd.partitions),
+        len(analysis.plan.qusds),
     )
-    base_ssd = analysis.ssd
+    base_plan = analysis.plan
 
     planner_base = planner_cfg or PlannerConfig()
     exec_cfg = exec_cfg or ExecutionConfig()
@@ -542,20 +542,20 @@ def run_three_way_ablation(
     sv_seconds_per_amp: Optional[float] = None
     pending_estimates: Dict[str, _PendingEstimate] = {}
 
-    logger.info("Planning variant 'full' (%s partitions)", len(base_ssd.partitions))
+    logger.info("Planning variant 'full' (%s QuSDs)", len(base_plan.qusds))
     plan_start = perf_counter()
-    planned_full = plan(base_ssd, planner_base)
+    planned_full = plan(base_plan, planner_base)
     logger.info("Finished planning variant 'full' in %.2fs", perf_counter() - plan_start)
-    exec_full = execute_ssd(planned_full, exec_cfg) if execute else None
+    exec_full = execute_plan(planned_full, exec_cfg) if execute else None
     if execute:
-        logger.info("Executing variant 'full' with %s partitions", len(planned_full.partitions))
+        logger.info("Executing variant 'full' with %s QuSDs", len(planned_full.qusds))
     fallback_time = sv_seconds_per_amp
     summary_full = _summarise_execution(planned_full, exec_full, estimator, fallback_time_per_amp=fallback_time)
     results.append(
         VariantRecord(
             name="full",
             planner=planner_base,
-            partitions=_partition_payload(planned_full),
+            qusds=_partition_payload(planned_full),
             execution=exec_full,
             summary=summary_full,
         )
@@ -574,14 +574,14 @@ def run_three_way_ablation(
             sv_seconds_per_amp = elapsed / ops
             _refresh_pending_estimates(pending_estimates, estimator, sv_seconds_per_amp)
 
-    merged = _collapse_to_single_partition(base_ssd, circuit)
+    merged = _collapse_to_single_partition(base_plan, circuit)
     logger.info("Planning variant 'no_disjoint' (forced single partition)")
     plan_start = perf_counter()
     planned_nodisjoint = plan(merged, planner_base)
     logger.info("Finished planning variant 'no_disjoint' in %.2fs", perf_counter() - plan_start)
-    exec_nodisjoint = execute_ssd(planned_nodisjoint, exec_cfg) if execute else None
+    exec_nodisjoint = execute_plan(planned_nodisjoint, exec_cfg) if execute else None
     if execute:
-        logger.info("Executing variant 'no_disjoint' with %s partitions", len(planned_nodisjoint.partitions))
+        logger.info("Executing variant 'no_disjoint' with %s QuSDs", len(planned_nodisjoint.qusds))
     fallback_time = sv_seconds_per_amp
     summary_nodisjoint = _summarise_execution(
         planned_nodisjoint,
@@ -594,7 +594,7 @@ def run_three_way_ablation(
         VariantRecord(
             name="no_disjoint",
             planner=planner_base,
-            partitions=_partition_payload(planned_nodisjoint),
+            qusds=_partition_payload(planned_nodisjoint),
             execution=exec_nodisjoint,
             summary=summary_nodisjoint,
         )
@@ -623,18 +623,18 @@ def run_three_way_ablation(
     )
     logger.info("Planning variant 'no_hybrid'")
     plan_start = perf_counter()
-    planned_nohybrid = plan(base_ssd, nohybrid_cfg)
+    planned_nohybrid = plan(base_plan, nohybrid_cfg)
     logger.info("Finished planning variant 'no_hybrid' in %.2fs", perf_counter() - plan_start)
-    exec_nohybrid = execute_ssd(planned_nohybrid, exec_cfg) if execute else None
+    exec_nohybrid = execute_plan(planned_nohybrid, exec_cfg) if execute else None
     if execute:
-        logger.info("Executing variant 'no_hybrid' with %s partitions", len(planned_nohybrid.partitions))
+        logger.info("Executing variant 'no_hybrid' with %s QuSDs", len(planned_nohybrid.qusds))
     fallback_time = sv_seconds_per_amp
     summary_nohybrid = _summarise_execution(planned_nohybrid, exec_nohybrid, estimator, fallback_time_per_amp=fallback_time)
     results.append(
         VariantRecord(
             name="no_hybrid",
             planner=nohybrid_cfg,
-            partitions=_partition_payload(planned_nohybrid),
+            qusds=_partition_payload(planned_nohybrid),
             execution=exec_nohybrid,
             summary=summary_nohybrid,
         )
@@ -661,7 +661,7 @@ def run_three_way_ablation(
         },
         "analysis": {
             "global_metrics": analysis.metrics_global,
-            "num_partitions": len(base_ssd.partitions),
+            "num_qusds": len(base_plan.qusds),
         },
         "variants": [record.to_json() for record in results],
     }

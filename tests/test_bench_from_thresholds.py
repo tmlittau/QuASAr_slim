@@ -30,27 +30,27 @@ def tmp_thresholds(tmp_path: Path) -> dict:
 def _make_fake_analyze() -> mock.Mock:
     fake = mock.Mock()
     fake.metrics_global = {"num_qubits": 3}
-    fake_ssd = mock.Mock()
+    fake_plan = mock.Mock()
     fake_tail = mock.Mock()
     fake_tail.backend = "sv"
-    fake_ssd.partitions = [fake_tail]
-    fake.ssd = fake_ssd
+    fake_plan.qusds = [fake_tail]
+    fake.plan = fake_plan
     return fake
 
 
 def test_run_from_thresholds_invokes_baselines(tmp_path: Path, tmp_thresholds: dict) -> None:
     execute_payload = {"meta": {"wall_elapsed_s": 1.23}, "results": []}
     fake_analyze = _make_fake_analyze()
-    fake_ssd = mock.Mock()
+    fake_plan = mock.Mock()
     fake_tail = mock.Mock()
     fake_tail.backend = "sv"
-    fake_ssd.partitions = [fake_tail]
-    fake_ssd.to_dict.return_value = {"partitions": []}
+    fake_plan.qusds = [fake_tail]
+    fake_plan.to_dict.return_value = {"qusds": []}
 
     with mock.patch.object(bft, "clifford_prefix_rot_tail", return_value=mock.Mock()) as mock_builder, \
          mock.patch.object(bft, "analyze", return_value=fake_analyze) as mock_analyze, \
-         mock.patch.object(bft, "plan", return_value=fake_ssd) as mock_plan, \
-         mock.patch.object(bft, "execute_ssd", return_value=execute_payload) as mock_execute, \
+         mock.patch.object(bft, "plan", return_value=fake_plan) as mock_plan, \
+         mock.patch.object(bft, "execute_plan", return_value=execute_payload) as mock_execute, \
          mock.patch.object(bft, "run_baselines", return_value={"entries": []}) as mock_baseline:
         bft.run_from_thresholds(
             tmp_thresholds,
@@ -82,16 +82,16 @@ def test_run_from_thresholds_invokes_baselines(tmp_path: Path, tmp_thresholds: d
 def test_run_from_thresholds_selects_dd_baseline(tmp_path: Path, tmp_thresholds: dict) -> None:
     execute_payload = {"meta": {"wall_elapsed_s": 1.23}, "results": []}
     fake_analyze = _make_fake_analyze()
-    fake_ssd = mock.Mock()
+    fake_plan = mock.Mock()
     fake_tail = mock.Mock()
     fake_tail.backend = "dd"
-    fake_ssd.partitions = [fake_tail]
-    fake_ssd.to_dict.return_value = {"partitions": []}
+    fake_plan.qusds = [fake_tail]
+    fake_plan.to_dict.return_value = {"qusds": []}
 
     with mock.patch.object(bft, "clifford_prefix_rot_tail", return_value=mock.Mock()), \
          mock.patch.object(bft, "analyze", return_value=fake_analyze), \
-         mock.patch.object(bft, "plan", return_value=fake_ssd), \
-         mock.patch.object(bft, "execute_ssd", return_value=execute_payload), \
+         mock.patch.object(bft, "plan", return_value=fake_plan), \
+         mock.patch.object(bft, "execute_plan", return_value=execute_payload), \
          mock.patch.object(bft, "run_baselines", return_value={"entries": []}) as mock_baseline:
         bft.run_from_thresholds(
             tmp_thresholds,
@@ -113,15 +113,15 @@ def test_run_from_thresholds_selects_dd_baseline(tmp_path: Path, tmp_thresholds:
 def test_run_from_thresholds_uses_sparse_builder(tmp_path: Path, tmp_thresholds: dict) -> None:
     execute_payload = {"meta": {"wall_elapsed_s": 1.23}, "results": []}
     fake_analyze = _make_fake_analyze()
-    fake_ssd = mock.Mock()
-    fake_ssd.partitions = []
-    fake_ssd.to_dict.return_value = {"partitions": []}
+    fake_plan = mock.Mock()
+    fake_plan.qusds = []
+    fake_plan.to_dict.return_value = {"qusds": []}
 
     with mock.patch.object(bft, "clifford_prefix_rot_tail", return_value=mock.Mock()) as mock_default_builder, \
          mock.patch.object(bft, "sparse_clifford_prefix_sparse_tail", return_value=mock.Mock()) as mock_sparse_builder, \
          mock.patch.object(bft, "analyze", return_value=fake_analyze), \
-         mock.patch.object(bft, "plan", return_value=fake_ssd), \
-         mock.patch.object(bft, "execute_ssd", return_value=execute_payload), \
+         mock.patch.object(bft, "plan", return_value=fake_plan), \
+         mock.patch.object(bft, "execute_plan", return_value=execute_payload), \
          mock.patch.object(bft, "run_baselines", return_value={"entries": []}):
         bft.run_from_thresholds(
             tmp_thresholds,

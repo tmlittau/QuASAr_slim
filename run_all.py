@@ -37,10 +37,10 @@ def main():
 
     logging.info("Analyzing circuit")
     analysis = analyze(circ)
-    logging.info("Found %d partitions", len(analysis.ssd))
+    logging.info("Found %d QuSDs", len(analysis.plan))
 
     logging.info("Planning")
-    planned = plan(analysis.ssd)
+    planned = plan(analysis.plan)
 
     logging.info("Executing plan with multithreading")
     cfg = ExecutionConfig(max_ram_gb=args.max_ram_gb, max_workers=args.max_workers,
@@ -52,7 +52,6 @@ def main():
         "analysis": {
             "global": analysis.metrics_global,
             "plan": plan_payload,
-            "ssd": plan_payload,
         },
         "execution": exec_payload,
     }

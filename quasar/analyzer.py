@@ -13,11 +13,6 @@ class AnalysisResult:
     plan: Plan
     metrics_global: Dict[str, Any]
 
-    @property
-    def ssd(self) -> Plan:
-        """Backward compatible accessor for callers still using the SSD name."""
-
-        return self.plan
 
 def _union_find_components(circ: QuantumCircuit) -> List[List[int]]:
     n = circ.num_qubits

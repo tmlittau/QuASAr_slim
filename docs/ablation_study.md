@@ -111,7 +111,7 @@ circuit, block_specs = ras.build_ablation_circuit(
 summary = ras.run_three_way_ablation(circuit)
 
 # 3. Inspect the returned payload
-summary["analysis"], summary["variants"][0]["partitions"][:2]
+summary["analysis"], summary["variants"][0]["qusds"][:2]
 ```
 
 The return value is a JSON-serialisable dictionary, so you can pretty-print it
@@ -120,7 +120,7 @@ or convert it into a pandas `DataFrame` inside the notebook:
 ```python
 import pandas as pd
 
-variants = pd.DataFrame(summary["variants"])  # planner metadata and partitions
+variants = pd.DataFrame(summary["variants"])  # planner metadata and QuSDs
 variants[["name", "planner"]]
 ```
 
@@ -141,7 +141,7 @@ planner outputs—all without writing intermediate files.
 ### Understanding the execution metrics
 
 The JSON payload surfaces the aggregated execution data produced by
-`execute_ssd`. Each variant records the global wall-clock runtime reported by
+`execute_plan`. Each variant records the global wall-clock runtime reported by
 the executor, not a sum of per-partition workers. The value comes directly from
 the `wall_elapsed_s` field that the simulation engine captures by timing the
 entire execution loop around the worker pool.【F:scripts/run_ablation_study.py†L322-L345】【F:quasar/simulation_engine.py†L187-L418】 As a result, the

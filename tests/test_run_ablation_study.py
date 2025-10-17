@@ -30,16 +30,16 @@ def test_streamlined_hybrid_blocks_split(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     analysis = analyze(circuit)
-    assert len(analysis.ssd.partitions) == 2
+    assert len(analysis.plan.qusds) == 2
 
     monkeypatch.setattr(planner_mod, "stim_available", lambda: True)
     monkeypatch.setattr(planner_mod, "ddsim_available", lambda: True)
 
     cfg = PlannerConfig(conv_amp_ops_factor=0.0, prefer_dd=True, hybrid_clifford_tail=True)
-    planned = plan(analysis.ssd, cfg)
+    planned = plan(analysis.plan, cfg)
 
     chains: dict[str, list] = {}
-    for node in planned.partitions:
+    for node in planned.qusds:
         chain_id = node.meta.get("chain_id")
         if chain_id is None:
             continue
@@ -102,15 +102,15 @@ def test_no_disjoint_variant_forces_statevector(monkeypatch: pytest.MonkeyPatch)
     )
 
     analysis = analyze(circuit)
-    collapsed = ras._collapse_to_single_partition(analysis.ssd, circuit)
+    collapsed = ras._collapse_to_single_partition(analysis.plan, circuit)
 
     monkeypatch.setattr(planner_mod, "stim_available", lambda: True)
     monkeypatch.setattr(planner_mod, "ddsim_available", lambda: True)
 
     planned = plan(collapsed, PlannerConfig(prefer_dd=True, hybrid_clifford_tail=True))
 
-    assert len(planned.partitions) == 1
-    node = planned.partitions[0]
+    assert len(planned.qusds) == 1
+    node = planned.qusds[0]
     assert node.backend == "sv"
     assert node.meta.get("planner_reason") == "forced_single_partition"
 
@@ -187,7 +187,7 @@ def test_pending_estimate_refreshed_after_calibration() -> None:
     record = ras.VariantRecord(
         name="pending",
         planner=PlannerConfig(),
-        partitions=[],
+        qusds=[],
         execution=execution,
         summary=summary,
     )

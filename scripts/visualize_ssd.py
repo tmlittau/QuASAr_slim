@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     circuit = build_circuit(args.kind, **params)
 
     analysis = analyze(circuit)
-    visualize_plan(analysis.ssd, show=not args.no_show, save_path=args.save)
+    visualize_plan(analysis.plan, show=not args.no_show, save_path=args.save)
     return 0
 
 

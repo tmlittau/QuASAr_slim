@@ -28,10 +28,10 @@ def test_hybrid_prefix_metrics():
 
     analysis = analyze(qc)
     cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=0.0)
-    planned = plan(analysis.ssd, cfg)
+    planned = plan(analysis.plan, cfg)
 
-    assert len(planned.partitions) == 2
-    prefix, tail = planned.partitions
+    assert len(planned.qusds) == 2
+    prefix, tail = planned.qusds
 
     assert prefix.metrics["num_gates"] == 3
     assert prefix.metrics["is_clifford"] is True
@@ -60,11 +60,11 @@ def test_hybrid_partition_qubits_are_local():
 
     analysis = analyze(qc)
     cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=0.0)
-    planned = plan(analysis.ssd, cfg)
+    planned = plan(analysis.plan, cfg)
 
-    assert len(planned.partitions) == 2
+    assert len(planned.qusds) == 2
 
-    for partition in planned.partitions:
+    for partition in planned.qusds:
         circuit = partition.circuit
         meta = getattr(circuit, "metadata", {}) or {}
         mapping = meta.get("mapping")
@@ -109,13 +109,13 @@ def main():
     sv_full = StatevectorBackend().run(circ)
     analysis = analyze(circ)
     cfg = PlannerConfig(hybrid_clifford_tail=True, conv_amp_ops_factor=16.0)
-    plan_result = plan(analysis.ssd, cfg)
+    plan_result = plan(analysis.plan, cfg)
     exec_payload = execute_plan(plan_result, ExecutionConfig(max_ram_gb=8.0))
     assert sv_full is not None
     sv_direct = StatevectorBackend().run(circ)
     assert np.allclose(sv_full, sv_direct, atol=1e-8)
     print("Planned nodes:")
-    for p in plan_result.partitions:
+    for p in plan_result.qusds:
         print(f"  node {p.id}: backend={p.backend}, chain={p.meta.get('chain_id')} seq={p.meta.get('seq_index')} reason={p.meta.get('planner_reason')}")
     print("OK: SV baseline consistent. (Hybrid split decision visible above.)")
 

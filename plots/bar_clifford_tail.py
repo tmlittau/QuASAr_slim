@@ -194,8 +194,9 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
 
         # Merge planner metadata into execution results so we can recover reasons.
         part_info: Dict[int, Dict[str, Any]] = {}
-        ssd_info = (analysis or {}).get("ssd", {}) or {}
-        for part in ssd_info.get("partitions", []) or []:
+        plan_info = (analysis or {}).get("plan", {}) or (analysis or {}).get("ssd", {}) or {}
+        partitions = plan_info.get("qusds") or plan_info.get("partitions") or []
+        for part in partitions:
             try:
                 pid = int(part.get("id"))
             except Exception:
@@ -211,7 +212,7 @@ def make_plot(suite_dir: str, out: Optional[str] = None, title: Optional[str] = 
         exec_results: List[Dict[str, Any]] = []
         for res in exec_payload.get("results", []) or []:
             r = dict(res)
-            pid = r.get("partition")
+            pid = r.get("qusd_id", r.get("partition"))
             if pid is not None:
                 try:
                     extra = part_info.get(int(pid))

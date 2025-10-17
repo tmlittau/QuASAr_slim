@@ -384,7 +384,7 @@ def run_single_baseline(circuit, which: Which, *, per_partition: bool = False,
         return {"mode": "whole", "which": which, "result": res}
     # Per-partition mode retained for experimentation
     a = analyze(circuit)
-    parts = a.ssd.partitions
+    parts = a.plan.qusds
     results: List[Dict[str, Any]] = []
     total_s = 0.0
     ok_all = True
@@ -404,7 +404,7 @@ def run_single_baseline(circuit, which: Which, *, per_partition: bool = False,
         total_s += r.get("elapsed_s", 0.0)
         ok_all = ok_all and bool(r.get("ok", False))
     return {"mode": "per_partition", "which": which, "ok": ok_all, "elapsed_s": total_s,
-            "wall_s_measured": total_s, "partitions": results, "num_partitions": len(parts)}
+            "wall_s_measured": total_s, "qusds": results, "num_qusds": len(parts)}
 
 def run_baselines(circuit, *, which: Optional[List[Which]] = None, per_partition: bool = False,
                   max_ram_gb: float | None = None, sv_ampops_per_sec: float | None = None,

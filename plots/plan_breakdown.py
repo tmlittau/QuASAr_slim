@@ -128,9 +128,10 @@ class _PartitionInfo:
 
 def _load_partition_info(case: Dict[str, Any]) -> Dict[int, _PartitionInfo]:
     analysis = (case.get("quasar") or {}).get("analysis") or case.get("analysis") or {}
-    ssd = (analysis.get("ssd") or {})
+    plan_info = analysis.get("plan") or analysis.get("ssd") or {}
+    partitions = plan_info.get("qusds") or plan_info.get("partitions") or []
     info: Dict[int, _PartitionInfo] = {}
-    for part in ssd.get("partitions", []) or []:
+    for part in partitions:
         if not isinstance(part, dict):
             continue
         try:
@@ -159,7 +160,7 @@ def _merge_execution_results(case: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(res, dict):
             continue
         r = dict(res)
-        pid = r.get("partition")
+        pid = r.get("qusd_id", r.get("partition"))
         part_meta = info.get(int(pid)) if pid is not None else None
         if part_meta:
             r.setdefault("chain_id", part_meta.chain_id)

@@ -9,7 +9,7 @@ from benchmarks.dd_friendly import dd_friendly_prefix_diag_tail
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 def main():
     ap = argparse.ArgumentParser(description="Run DD-friendly prefix+diag-tail circuits and write JSON results + bar plot")
@@ -34,8 +34,8 @@ def main():
                                                 tail_bandwidth=args.tail_bandwidth, seed=42)
             a = analyze(circ)
             cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, conv_amp_ops_factor=args.conv_factor, sv_twoq_factor=args.twoq_factor)
-            ssd = plan(a.ssd, cfg)
-            exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=args.max_ram_gb))
+            planned = plan(a.plan, cfg)
+            exec_payload = execute_plan(planned, ExecutionConfig(max_ram_gb=args.max_ram_gb))
             bl = run_baselines(circ, which=["tableau","sv","dd"], per_partition=False,
                                max_ram_gb=args.max_ram_gb, sv_ampops_per_sec=args.sv_ampops_per_sec)
 
@@ -45,7 +45,7 @@ def main():
                                     "angle_scale": args.angle_scale, "tail_sparsity": args.tail_sparsity,
                                     "tail_bandwidth": args.tail_bandwidth}},
                 "planner": {"conv_factor": args.conv_factor, "twoq_factor": args.twoq_factor},
-                "quasar": {"execution": exec_payload, "analysis": {"global": a.metrics_global, "ssd": ssd.to_dict()}},
+                "quasar": {"execution": exec_payload, "analysis": {"global": a.metrics_global, "plan": planned.to_dict()}},
                 "baselines": bl,
             }
             fn = os.path.join(args.out_dir, f"dd_friendly_n-{n}_d-{d}.json")

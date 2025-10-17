@@ -82,8 +82,8 @@ def _fake_analyze() -> mock.Mock:
         "num_gates": 10,
         "two_qubit_gates": 4,
     }
-    fake.ssd = mock.Mock()
-    fake.ssd.partitions = []
+    fake.plan = mock.Mock()
+    fake.plan.qusds = []
     return fake
 
 

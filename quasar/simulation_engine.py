@@ -589,5 +589,3 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
     }
 
 
-# Backwards compatibility alias for legacy callers.
-execute_ssd = execute_plan

@@ -100,7 +100,6 @@ class Plan:
         return {
             "meta": dict(self.meta),
             "qusds": payload,
-            "partitions": payload,
             "estimated_cost": float(self.estimated_cost),
             "decision_trace": list(self.decision_trace),
         }
@@ -129,10 +128,6 @@ class Plan:
 
     def __iter__(self):  # pragma: no cover - trivial
         return iter(self.qusds)
-
-    @property
-    def partitions(self) -> List[QuSD]:
-        return self.qusds
 
     def fork(self) -> "Plan":
         clone_map: Dict[int, QuSD] = {}
