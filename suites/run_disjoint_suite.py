@@ -14,7 +14,7 @@ from benchmarks.disjoint import (
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 
 def _effective_tail_depth(args: argparse.Namespace) -> int:
@@ -109,7 +109,7 @@ def run_case(
             _record_error(errors, "analyze", exc)
             analysis_result = None
 
-    planned_ssd = None
+    planned_plan = None
     if analysis_result is not None:
         try:
             planner_cfg = PlannerConfig(
@@ -117,24 +117,24 @@ def run_case(
                 conv_amp_ops_factor=float(args.conv_factor),
                 sv_twoq_factor=float(args.twoq_factor),
             )
-            planned_ssd = plan(analysis_result.ssd, planner_cfg)
-            record["quasar"]["analysis"]["ssd"] = planned_ssd.to_dict()
+            planned_plan = plan(analysis_result.plan, planner_cfg)
+            record["quasar"]["analysis"]["plan"] = planned_plan.to_dict()
         except Exception as exc:
             _record_error(errors, "plan", exc)
-            planned_ssd = None
+            planned_plan = None
             try:
-                record["quasar"]["analysis"]["ssd"] = analysis_result.ssd.to_dict()
+                record["quasar"]["analysis"]["plan"] = analysis_result.plan.to_dict()
             except Exception:  # pragma: no cover - defensive fallback
                 pass
 
-    if planned_ssd is not None:
+    if planned_plan is not None:
         try:
             exec_cfg = ExecutionConfig(
                 max_ram_gb=float(args.max_ram_gb),
                 max_workers=int(args.parallel_workers) if args.parallel_workers is not None else 0,
             )
             t0 = time.time()
-            exec_payload = execute_ssd(planned_ssd, exec_cfg)
+            exec_payload = execute_plan(planned_plan, exec_cfg)
             elapsed = time.time() - t0
             _ensure_wall_time(exec_payload, elapsed)
             record["quasar"]["execution"] = exec_payload

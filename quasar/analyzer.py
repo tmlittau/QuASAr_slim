@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
-from .SSD import SSD, PartitionNode
+from .qusd import Plan, QuSD
 from .gate_metrics import circuit_metrics
 
 from qiskit import QuantumCircuit
@@ -10,8 +10,9 @@ from qiskit import QuantumCircuit
 
 @dataclass
 class AnalysisResult:
-    ssd: SSD
+    plan: Plan
     metrics_global: Dict[str, Any]
+
 
 def _union_find_components(circ: QuantumCircuit) -> List[List[int]]:
     n = circ.num_qubits
@@ -61,12 +62,12 @@ def _extract_subcircuit(circ: QuantumCircuit, qubit_subset: List[int]) -> Quantu
 
 def analyze(circuit: QuantumCircuit) -> AnalysisResult:
     comps = _union_find_components(circuit)
-    ssd = SSD(meta={"total_qubits": circuit.num_qubits, "components": len(comps)})
+    plan = Plan(meta={"total_qubits": circuit.num_qubits, "components": len(comps)})
     for pid, qubits in enumerate(comps):
         sub = _extract_subcircuit(circuit, qubits)
         metrics = circuit_metrics(sub)
-        node = PartitionNode(id=pid, qubits=qubits, circuit=sub, metrics=metrics)
-        ssd.add(node)
+        qusd = QuSD(id=pid, qubits=qubits, circuit=sub, metrics=metrics)
+        plan.add(qusd)
 
     global_metrics = circuit_metrics(circuit)
-    return AnalysisResult(ssd=ssd, metrics_global=global_metrics)
+    return AnalysisResult(plan=plan, metrics_global=global_metrics)

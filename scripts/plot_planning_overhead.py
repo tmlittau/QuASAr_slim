@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 from benchmarks import CIRCUIT_REGISTRY, build as build_circuit
 from quasar.analyzer import analyze
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 from plots.palette import EDGE_COLOR, PASTEL_COLORS, apply_paper_style
 
@@ -265,13 +265,13 @@ class RunResult:
 
 def _execute_worker(
     q: mp.Queue,
-    ssd,
+    plan_obj,
     exec_cfg: ExecutionConfig,
 ) -> None:
-    """Run ``execute_ssd`` in a worker process and communicate the outcome."""
+    """Run ``execute_plan`` in a worker process and communicate the outcome."""
 
     try:
-        result = execute_ssd(ssd, exec_cfg)
+        result = execute_plan(plan_obj, exec_cfg)
     except Exception as exc:  # pragma: no cover - defensive guard
         q.put(("error", (type(exc).__name__, str(exc))))
     else:
@@ -279,18 +279,18 @@ def _execute_worker(
 
 
 def _execute_with_timeout(
-    ssd,
+    plan_obj,
     exec_cfg: ExecutionConfig,
     timeout_s: float | None,
 ) -> Tuple[Dict[str, object] | None, bool]:
-    """Run ``execute_ssd`` with a wall-clock timeout."""
+    """Run ``execute_plan`` with a wall-clock timeout."""
 
     if timeout_s is None or timeout_s <= 0:
-        return execute_ssd(ssd, exec_cfg), False
+        return execute_plan(plan_obj, exec_cfg), False
 
     ctx = mp.get_context("spawn")
     q: mp.Queue = ctx.Queue()
-    proc = ctx.Process(target=_execute_worker, args=(q, ssd, exec_cfg))
+    proc = ctx.Process(target=_execute_worker, args=(q, plan_obj, exec_cfg))
     proc.start()
     proc.join(timeout_s)
 
@@ -347,7 +347,7 @@ def _run_circuit(
     analysis_time = perf_counter() - analysis_start
 
     plan_start = perf_counter()
-    planned = plan(analysis.ssd, planner_cfg)
+    planned = plan(analysis.plan, planner_cfg)
     planning_time = perf_counter() - plan_start
 
     execution_start = perf_counter()

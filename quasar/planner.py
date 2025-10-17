@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
-from .SSD import SSD, PartitionNode
 from .backends.sv import estimate_sv_bytes
 from .backends.dd import ddsim_available
 from .backends.tableau import stim_available
 from .cost_estimator import CostEstimator
 from .gate_metrics import circuit_metrics, gate_name, CLIFFORD_GATES
 from .simulation_plan import SimulationPlanCollection
+from .qusd import Plan, QuSD
 
 
 @dataclass
@@ -53,7 +53,7 @@ def _choose_backend(metrics: Dict[str, Any], cfg: PlannerConfig) -> tuple[str, s
     return "sv", "fallback: only sv available"
 
 
-def _split_at_first_nonclifford(node: PartitionNode):
+def _split_at_first_nonclifford(node: QuSD):
     data = node.circuit.data
     split = None
     for idx, (inst, qargs, cargs) in enumerate(data):
@@ -89,7 +89,7 @@ def _build_subcircuit_like(parent, ops: List):
     return sub
 
 
-def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
+def _consider_hybrid(node: QuSD, cfg: PlannerConfig):
     if not cfg.hybrid_clifford_tail:
         return None
     split = _split_at_first_nonclifford(node)
@@ -112,14 +112,14 @@ def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
         tail = _build_subcircuit_like(node.circuit, tail_ops)
         pre_metrics = circuit_metrics(pre)
         tail_metrics = circuit_metrics(tail)
-        pre_node = PartitionNode(
+        pre_node = QuSD(
             id=int(f"{node.id}0"),
             qubits=list(node.qubits),
             circuit=pre,
             metrics=pre_metrics,
             meta=dict(node.meta),
         )
-        tail_node = PartitionNode(
+        tail_node = QuSD(
             id=int(f"{node.id}1"),
             qubits=list(node.qubits),
             circuit=tail,
@@ -166,8 +166,8 @@ def _consider_hybrid(node: PartitionNode, cfg: PlannerConfig):
     return None
 
 
-def _initialize_planner_meta(ssd: SSD, cfg: PlannerConfig) -> SSD:
-    annotated = SSD(meta=dict(ssd.meta))
+def _initialize_planner_meta(plan: Plan, cfg: PlannerConfig) -> Plan:
+    annotated = Plan(meta=dict(plan.meta))
     annotated.meta["planner"] = {
         "max_ram_gb": cfg.max_ram_gb,
         "prefer_dd": cfg.prefer_dd,
@@ -178,8 +178,8 @@ def _initialize_planner_meta(ssd: SSD, cfg: PlannerConfig) -> SSD:
     return annotated
 
 
-def _make_partition_node(node: PartitionNode, backend: str, reason: str) -> PartitionNode:
-    new_node = PartitionNode(
+def _make_partition_node(node: QuSD, backend: str, reason: str) -> QuSD:
+    new_node = QuSD(
         id=node.id,
         qubits=list(node.qubits),
         circuit=node.circuit,
@@ -191,10 +191,10 @@ def _make_partition_node(node: PartitionNode, backend: str, reason: str) -> Part
     return new_node
 
 
-def _plan_options_for_partition(node: PartitionNode, cfg: PlannerConfig) -> List[List[PartitionNode]]:
+def _plan_options_for_partition(node: QuSD, cfg: PlannerConfig) -> List[List[QuSD]]:
     meta = dict(node.meta)
     if meta.get("collapsed"):
-        collapsed = PartitionNode(
+        collapsed = QuSD(
             id=node.id,
             qubits=list(node.qubits),
             circuit=node.circuit,
@@ -211,7 +211,7 @@ def _plan_options_for_partition(node: PartitionNode, cfg: PlannerConfig) -> List
         collapsed.meta["planner_reason"] = reason
         return [[collapsed]]
 
-    options: List[List[PartitionNode]] = []
+    options: List[List[QuSD]] = []
     backend, reason = _choose_backend(node.metrics, cfg)
     options.append([_make_partition_node(node, backend, reason)])
 
@@ -221,10 +221,10 @@ def _plan_options_for_partition(node: PartitionNode, cfg: PlannerConfig) -> List
     return options
 
 
-def _linear_plan(ssd: SSD, cfg: PlannerConfig) -> SSD:
-    annotated = _initialize_planner_meta(ssd, cfg)
+def _linear_plan(plan: Plan, cfg: PlannerConfig) -> Plan:
+    annotated = _initialize_planner_meta(plan, cfg)
     estimator = CostEstimator.from_planner_config(cfg)
-    for node in ssd.partitions:
+    for node in plan.qusds:
         options = _plan_options_for_partition(node, cfg)
         if not options:
             continue
@@ -233,7 +233,7 @@ def _linear_plan(ssd: SSD, cfg: PlannerConfig) -> SSD:
         for option in options:
             option_cost = 0.0
             for candidate in option:
-                option_cost += SSD._estimate_node_cost(candidate, estimator)
+                option_cost += Plan._estimate_qusd_cost(candidate, estimator)
             if best_cost is None or option_cost < best_cost:
                 best_cost = option_cost
                 best_option = option
@@ -242,12 +242,12 @@ def _linear_plan(ssd: SSD, cfg: PlannerConfig) -> SSD:
     return annotated
 
 
-def _should_use_quick_path(ssd: SSD, cfg: PlannerConfig) -> bool:
-    if len(ssd.partitions) <= max(1, cfg.quick_path_partition_threshold):
+def _should_use_quick_path(plan: Plan, cfg: PlannerConfig) -> bool:
+    if len(plan.qusds) <= max(1, cfg.quick_path_partition_threshold):
         return True
     total_gates = 0
     max_qubits = 0
-    for node in ssd.partitions:
+    for node in plan.qusds:
         total_gates += int(node.metrics.get("num_gates", 0) or 0)
         max_qubits = max(max_qubits, int(node.metrics.get("num_qubits", 0) or 0))
     if total_gates <= cfg.quick_path_gate_threshold and max_qubits <= cfg.quick_path_qubit_threshold:
@@ -255,17 +255,17 @@ def _should_use_quick_path(ssd: SSD, cfg: PlannerConfig) -> bool:
     return False
 
 
-def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
+def plan(plan: Plan, cfg: Optional[PlannerConfig] = None) -> Plan:
     cfg = cfg or PlannerConfig()
-    if _should_use_quick_path(ssd, cfg):
-        return _linear_plan(ssd, cfg)
+    if _should_use_quick_path(plan, cfg):
+        return _linear_plan(plan, cfg)
 
-    base_ssd = _initialize_planner_meta(ssd, cfg)
+    base_plan = _initialize_planner_meta(plan, cfg)
     estimator = CostEstimator.from_planner_config(cfg)
     plans = SimulationPlanCollection(cfg.max_candidate_plans)
-    plans.add(base_ssd)
+    plans.add(base_plan)
 
-    for node in ssd.partitions:
+    for node in plan.qusds:
         options = _plan_options_for_partition(node, cfg)
         next_plans = SimulationPlanCollection(cfg.max_candidate_plans)
         for current in plans:
@@ -277,11 +277,11 @@ def plan(ssd: SSD, cfg: Optional[PlannerConfig] = None) -> SSD:
 
     best_plan = plans.best()
     if best_plan is None:
-        return _linear_plan(ssd, cfg)
+        return _linear_plan(plan, cfg)
     return best_plan
 
 
-def execute(ssd: SSD):
-    from .simulation_engine import execute_ssd, ExecutionConfig
+def execute(plan: Plan):
+    from .simulation_engine import execute_plan, ExecutionConfig
 
-    return execute_ssd(ssd, ExecutionConfig())
+    return execute_plan(plan, ExecutionConfig())

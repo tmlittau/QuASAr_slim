@@ -47,10 +47,10 @@ def main():
     analysis = analyze(circ)
     cfg = PlannerConfig(max_ram_gb=args.max_ram_gb, prefer_dd=args.prefer_dd,
                         conv_amp_ops_factor=args.conv_factor, sv_twoq_factor=args.twoq_factor)
-    ssd = plan(analysis.ssd, cfg)
-    from quasar.simulation_engine import ExecutionConfig, execute_ssd
-    exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=args.max_ram_gb))
-    payload = {"analysis": {"global": analysis.metrics_global, "ssd": ssd.to_dict()}, "execution": exec_payload}
+    planned = plan(analysis.plan, cfg)
+    from quasar.simulation_engine import ExecutionConfig, execute_plan
+    exec_payload = execute_plan(planned, ExecutionConfig(max_ram_gb=args.max_ram_gb))
+    payload = {"analysis": {"global": analysis.metrics_global, "plan": planned.to_dict()}, "execution": exec_payload}
     with open(args.out, "w") as f:
         json.dump(payload, f, indent=2)
     print(f"Wrote {args.out}")

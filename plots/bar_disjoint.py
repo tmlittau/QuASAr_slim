@@ -239,9 +239,10 @@ def _extract_quasar_memory_bytes(data: Dict[str, Any]) -> Optional[float]:
                 best = mem
         if best is not None:
             return best
-    planner = (quasar.get("analysis") or {}).get("ssd") if isinstance(quasar, dict) else None
+    analysis = (quasar.get("analysis") if isinstance(quasar, dict) else {}) or {}
+    planner = analysis.get("plan") or analysis.get("ssd")
     if isinstance(planner, dict):
-        parts = planner.get("partitions")
+        parts = planner.get("qusds") or planner.get("partitions")
         if isinstance(parts, list):
             best: Optional[float] = None
             for part in parts:

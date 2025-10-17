@@ -11,7 +11,7 @@ from benchmarks import build as build_circuit
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 @dataclass
 class CaseSpec:
@@ -41,8 +41,8 @@ def run_case(case: CaseSpec, *, max_ram_gb: float, sv_ampops_per_sec: float | No
 
     a = analyze(circ)
     cfg = PlannerConfig(max_ram_gb=max_ram_gb, conv_amp_ops_factor=conv_factor, sv_twoq_factor=twoq_factor)
-    ssd = plan(a.ssd, cfg)
-    exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=max_ram_gb))
+    planned = plan(a.plan, cfg)
+    exec_payload = execute_plan(planned, ExecutionConfig(max_ram_gb=max_ram_gb))
     quasar_wall = exec_payload.get("meta", {}).get("wall_elapsed_s", None)
 
     bl = run_baselines(circ, which=["tableau","sv","dd"], per_partition=False,
@@ -53,7 +53,7 @@ def run_case(case: CaseSpec, *, max_ram_gb: float, sv_ampops_per_sec: float | No
         "planner": {"conv_factor": conv_factor, "twoq_factor": twoq_factor},
         "quasar": {"wall_elapsed_s": quasar_wall,
                    "execution": exec_payload,
-                   "analysis": {"global": a.metrics_global, "ssd": ssd.to_dict()}},
+                   "analysis": {"global": a.metrics_global, "plan": planned.to_dict()}},
         "baselines": bl,
     }
     os.makedirs(out_dir, exist_ok=True)

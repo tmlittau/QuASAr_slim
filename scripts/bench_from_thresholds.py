@@ -15,7 +15,7 @@ from benchmarks.hybrid import (
 from quasar.analyzer import analyze
 from quasar.baselines import run_baselines
 from quasar.planner import PlannerConfig, plan
-from quasar.simulation_engine import ExecutionConfig, execute_ssd
+from quasar.simulation_engine import ExecutionConfig, execute_plan
 
 from plots.palette import apply_paper_style
 
@@ -100,18 +100,18 @@ def run_from_thresholds(
             prefer_dd=bool(use_sparse_tail),
         )
         log.info(
-            "Planning SSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)",
+            "Planning QuSD execution (max_ram_gb=%.1f, conv=%.2f, twoq=%.2f)",
             max_ram_gb,
             conv_factor,
             twoq_factor,
         )
         plan_start = perf_counter()
-        ssd = plan(a.ssd, cfg)
+        planned = plan(a.plan, cfg)
         log.info("Plan completed in %.2fs", perf_counter() - plan_start)
         partition_summaries: List[str] = []
         backend_groups: Dict[str, List[str]] = {}
         backend_details: Dict[str, List[str]] = {}
-        for node in ssd.partitions:
+        for node in planned.qusds:
             backend = node.backend or "unassigned"
             backend_groups.setdefault(backend, []).append(str(node.id))
             node_meta = node.meta if isinstance(node.meta, dict) else {}
@@ -148,7 +148,7 @@ def run_from_thresholds(
                     f"id={node.id} reason={planner_reason}"
                 )
 
-        log.info("Planner produced %d partitions", len(ssd.partitions))
+        log.info("Planner produced %d QuSDs", len(planned.qusds))
         for summary in partition_summaries:
             log.info("  %s", summary)
         for backend, ids in backend_groups.items():
@@ -156,14 +156,14 @@ def run_from_thresholds(
             if backend in backend_details:
                 for detail in backend_details[backend]:
                     log.info("    %s", detail)
-        log.info("Executing SSD (max_ram_gb=%.1f)", max_ram_gb)
+        log.info("Executing plan (max_ram_gb=%.1f)", max_ram_gb)
         exec_start = perf_counter()
-        exec_payload = execute_ssd(ssd, ExecutionConfig(max_ram_gb=max_ram_gb))
+        exec_payload = execute_plan(planned, ExecutionConfig(max_ram_gb=max_ram_gb))
         exec_elapsed = perf_counter() - exec_start
         log.info("Execution completed in %.2fs", exec_elapsed)
 
-        if ssd.partitions:
-            tail_backend = ssd.partitions[-1].backend or "unassigned"
+        if planned.qusds:
+            tail_backend = planned.qusds[-1].backend or "unassigned"
             log.info("Selecting baseline backend to match tail partition: %s", tail_backend)
         else:
             tail_backend = None
@@ -224,7 +224,7 @@ def run_from_thresholds(
             "planner": {"conv_factor": conv_factor, "twoq_factor": twoq_factor},
             "quasar": {"wall_elapsed_s": exec_payload.get("meta", {}).get("wall_elapsed_s", None),
                        "execution": exec_payload,
-                       "analysis": {"global": a.metrics_global, "ssd": ssd.to_dict()}},
+                       "analysis": {"global": a.metrics_global, "plan": planned.to_dict()}},
             "baselines": bl,
         }
         stem = f"{kind}_n-{n}_d-{depth}_cut-{cutoff}"
