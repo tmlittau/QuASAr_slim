@@ -211,7 +211,8 @@ def _hash_statevector(state: Any) -> Optional[str]:
 def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str, Any]:
     cfg = cfg or ExecutionConfig()
     cpu_count = None
-    if cfg.max_workers <= 0:
+    auto_workers = cfg.max_workers <= 0
+    if auto_workers:
         try:
             import os
 
@@ -236,16 +237,12 @@ def execute_plan(plan: Plan, cfg: Optional[ExecutionConfig] = None) -> Dict[str,
     result_cache: Dict[Tuple[str, str, bool, Optional[str]], Dict[str, Any]] = {}
 
     chains = _group_chains(plan)
-    if cfg.max_workers <= 0:
-        sensitive_backends = {"sv", "dd"}
-        has_sensitive = any(
-            str((node.backend or "sv")).lower() in sensitive_backends for node in plan.qusds
-        )
-        desired = 1 if has_sensitive else max(1, len(chains))
+    if auto_workers:
+        chain_count = max(1, len(chains))
         if cpu_count is None:
-            cfg.max_workers = desired
+            cfg.max_workers = chain_count
         else:
-            cfg.max_workers = max(1, min(cpu_count, desired))
+            cfg.max_workers = max(1, min(cpu_count, chain_count))
 
     def _make_progress_cb(pid: int) -> Callable[[int], None]:
         """Backends call this with the number of newly-processed gates (default 1)."""

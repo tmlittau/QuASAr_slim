@@ -63,17 +63,18 @@ def _patch_backend_runner(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "num_qusds,cpu_count",
+    "num_qusds,cpu_count,expected",
     [
-        (3, 8),
-        (6, 16),
-        (12, 4),
+        (3, 8, 3),
+        (6, 16, 6),
+        (12, 4, 4),
     ],
 )
-def test_execute_plan_auto_workers_serialises_sensitive_backends(
+def test_execute_plan_auto_workers_parallelises_sensitive_backends(
     monkeypatch: pytest.MonkeyPatch,
     num_qusds: int,
     cpu_count: int,
+    expected: int,
 ) -> None:
     monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
 
@@ -82,7 +83,7 @@ def test_execute_plan_auto_workers_serialises_sensitive_backends(
 
     execute_plan(plan, cfg)
 
-    assert cfg.max_workers == 1
+    assert cfg.max_workers == expected
 
 
 @pytest.mark.parametrize(
