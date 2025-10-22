@@ -6,6 +6,15 @@ from .analyzer import analyze, AnalysisResult
 from .planner import plan, PlannerConfig
 from .simulation_engine import execute_plan, ExecutionConfig
 from .cost_estimator import CostEstimator
+from .theoretical import (
+    BackendEstimate,
+    PartitionEstimate,
+    QuasarEstimate,
+    estimate_decision_diagram,
+    estimate_quasar,
+    estimate_statevector,
+    estimate_tableau,
+)
 
 __all__ = [
     "Plan",
@@ -18,4 +27,11 @@ __all__ = [
     "execute_plan",
     "ExecutionConfig",
     "CostEstimator",
+    "BackendEstimate",
+    "PartitionEstimate",
+    "QuasarEstimate",
+    "estimate_statevector",
+    "estimate_tableau",
+    "estimate_decision_diagram",
+    "estimate_quasar",
 ]

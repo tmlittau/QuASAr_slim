@@ -34,7 +34,7 @@ class CostEstimator:
     def conversion_cost(self, n: int) -> float:
         return self.params.conv_amp_ops_factor * self._amps(n)
 
-    def decision_diagram_cost(
+    def _decision_diagram_components(
         self,
         *,
         n: int,
@@ -42,9 +42,12 @@ class CostEstimator:
         twoq: int,
         rotation_count: int,
         sparsity: float,
-    ) -> float:
+    ) -> tuple[float, float, float, float, float]:
+        """Return cost model components for decision diagram estimates."""
+
         if n <= 0 or num_gates <= 0:
-            return float(self.params.dd_base_cost)
+            base_cost = float(self.params.dd_base_cost)
+            return base_cost, 0.0, 0.0, 0.0, 1.0
 
         frontier = max(1, int(n))
         base_nodes = frontier * max(1.0, math.log2(frontier + 1.0))
@@ -60,11 +63,53 @@ class CostEstimator:
         modifier -= self.params.dd_sparsity_discount * sparsity
         modifier = max(self.params.dd_modifier_floor, modifier)
 
-        cost = (
-            self.params.dd_base_cost
-            + self.params.dd_gate_node_factor * num_gates * base_nodes * gate_factor * modifier
+        node_factor = num_gates * base_nodes * gate_factor * modifier
+        cost = self.params.dd_base_cost + self.params.dd_gate_node_factor * node_factor
+        return float(cost), float(node_factor), float(base_nodes), float(gate_factor), float(modifier)
+
+    def decision_diagram_cost(
+        self,
+        *,
+        n: int,
+        num_gates: int,
+        twoq: int,
+        rotation_count: int,
+        sparsity: float,
+    ) -> float:
+        cost, *_ = self._decision_diagram_components(
+            n=n,
+            num_gates=num_gates,
+            twoq=twoq,
+            rotation_count=rotation_count,
+            sparsity=sparsity,
         )
         return float(cost)
+
+    def decision_diagram_details(
+        self,
+        *,
+        n: int,
+        num_gates: int,
+        twoq: int,
+        rotation_count: int,
+        sparsity: float,
+    ) -> Dict[str, float]:
+        """Return detailed components of the decision diagram cost model."""
+
+        cost, node_factor, base_nodes, gate_factor, modifier = self._decision_diagram_components(
+            n=n,
+            num_gates=num_gates,
+            twoq=twoq,
+            rotation_count=rotation_count,
+            sparsity=sparsity,
+        )
+        return {
+            "cost": float(cost),
+            "estimated_nodes": float(node_factor) if node_factor > 0 else 0.0,
+            "base_nodes": float(base_nodes),
+            "gate_factor": float(gate_factor),
+            "modifier": float(modifier),
+        }
 
     def compare_clifford_prefix_tail(self, *, n: int, one_pre: int, two_pre: int, one_tail: int, two_tail: int) -> Dict[str, Any]:
         sv_total  = self.sv_cost(n, one_pre + one_tail, two_pre + two_tail)

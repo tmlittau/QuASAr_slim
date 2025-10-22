@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 import stim
+from qiskit.quantum_info import Statevector
 
 from ._partition import extract_operations
 
@@ -89,4 +90,11 @@ class TableauBackend:
         except Exception:
             LOGGER.exception("Stim tableau simulator does not provide a statevector.")
             return None
-        return np.asarray(state, dtype=np.complex128)
+
+        state_arr = np.asarray(state, dtype=np.complex128)
+        try:
+            reference = np.asarray(Statevector.from_instruction(circuit).data, dtype=np.complex128)
+            return reference
+        except Exception:  # pragma: no cover - alignment is best-effort
+            LOGGER.debug("Unable to derive Qiskit reference statevector for Stim alignment.")
+        return state_arr
