@@ -27,7 +27,19 @@ class _DecisionDiagramResult:
     decision_diagram: "mqt.core.dd.VectorDD"
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.decision_diagram, name)
+        attribute = getattr(self.decision_diagram, name)
+
+        if callable(attribute):
+            # Wrap callables so ``self`` stays alive for the duration of the
+            # delegated call, preventing the simulator from being destroyed
+            # mid-execution when users chain ``run(...).method()``.
+
+            def method(*args: Any, _attribute=attribute, _self=self, **kwargs: Any) -> Any:
+                return _attribute(*args, **kwargs)
+
+            return method
+
+        return attribute
 
 
 def ddsim_available() -> bool:

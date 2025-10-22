@@ -74,6 +74,14 @@ def test_decision_diagram_backend_matches_bell_state():
     assert vector.shape == (4,)
     assert np.allclose(vector, _expected_bell_state())
 
+    chained_vector = np.array(
+        DecisionDiagramBackend().run(_bell_state_circuit()).get_vector(),
+        dtype=np.complex128,
+    )
+
+    assert chained_vector.shape == (4,)
+    assert np.allclose(chained_vector, _expected_bell_state())
+
 
 def test_statevector_backend_flags_mismapped_qubits():
     class MiswiredCircuit:
