@@ -7,16 +7,19 @@ from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from qiskit import QuantumCircuit
 
-from .analyzer import analyze
+from .analyzer import AnalysisResult, analyze
 from .backends.sv import estimate_sv_bytes
 from .cost_estimator import CostEstimator, CostParams
 from .gate_metrics import circuit_metrics
 from .planner import PlannerConfig, plan
+from .qusd import Plan, QuSD
 
 __all__ = [
     "BackendEstimate",
     "PartitionEstimate",
     "QuasarEstimate",
+    "TheoreticalAblationOptions",
+    "analyze_without_disjoint",
     "estimate_statevector",
     "estimate_tableau",
     "estimate_decision_diagram",
@@ -62,6 +65,44 @@ class QuasarEstimate:
     plan_cost_units: float
     single_backend: Optional[str] = None
     single_backend_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TheoreticalAblationOptions:
+    """Toggle individual planner features when estimating QuASAr costs."""
+
+    disable_disjoint_subcircuits: bool = False
+    disable_method_partitioning: bool = False
+    force_full_planner_search: bool = False
+
+
+def analyze_without_disjoint(
+    circuit: QuantumCircuit,
+    *,
+    force_backend: Optional[str] = None,
+    forced_reason: str = "forced_single_partition",
+) -> AnalysisResult:
+    """Collapse a circuit into a single partition for theoretical analysis."""
+
+    metrics = circuit_metrics(circuit)
+    plan = Plan(meta={"total_qubits": circuit.num_qubits, "components": 1})
+    qusd_meta: Dict[str, Any] = {"collapsed": True}
+    if force_backend:
+        qusd_meta.update(
+            {
+                "forced_backend": force_backend,
+                "forced_backend_reason": forced_reason,
+            }
+        )
+    qusd = QuSD(
+        id=0,
+        qubits=list(range(circuit.num_qubits)),
+        circuit=circuit.copy(),
+        metrics=dict(metrics),
+        meta=qusd_meta,
+    )
+    plan.add(qusd)
+    return AnalysisResult(plan=plan, metrics_global=dict(metrics))
 
 
 def _extract_gate_counts(metrics: Dict[str, Any]) -> Dict[str, int | float]:
@@ -289,15 +330,30 @@ def estimate_quasar(
     tableau_ops_per_sec: Optional[float] = None,
     tableau_state_bytes: float = 16.0,
     dd_node_bytes: float = 64.0,
-    analysis_fn: Optional[Callable[[QuantumCircuit], Any]] = None,
+    analysis_fn: Optional[Callable[[QuantumCircuit], AnalysisResult]] = None,
+    ablation: Optional[TheoreticalAblationOptions] = None,
 ) -> QuasarEstimate:
     """Return theoretical runtime and memory estimates for a QuASAr plan."""
 
-    if analysis_fn is None:
+    ablation_opts = ablation or TheoreticalAblationOptions()
+    if ablation_opts.disable_disjoint_subcircuits:
+        analysis = analyze_without_disjoint(circuit, force_backend="sv")
+    elif analysis_fn is None:
         analysis = analyze(circuit)
     else:
         analysis = analysis_fn(circuit)
+
     cfg = planner_cfg or PlannerConfig()
+    if ablation_opts.disable_method_partitioning and cfg.hybrid_clifford_tail:
+        cfg = replace(cfg, hybrid_clifford_tail=False)
+    if ablation_opts.force_full_planner_search:
+        cfg = replace(
+            cfg,
+            quick_path_partition_threshold=-1,
+            quick_path_gate_threshold=-1,
+            quick_path_qubit_threshold=-1,
+        )
+
     planned = plan(analysis.plan, cfg)
 
     estimator = _build_estimator(cost_params, tableau_unit_cost)
