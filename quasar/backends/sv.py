@@ -168,7 +168,12 @@ class StatevectorBackend:
                 progress_cb(max(1, len(ops)))
             return np.asarray(state.data, dtype=np.complex128)
 
-        if want_statevector and initial_state is None and ops:
+        if (
+            self._method == "statevector"
+            and want_statevector
+            and initial_state is None
+            and ops
+        ):
             state = Statevector.from_instruction(qc)
             if progress_cb is not None:
                 progress_cb(max(1, len(ops)))
