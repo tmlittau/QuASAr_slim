@@ -67,6 +67,7 @@ def test_decision_diagram_backend_matches_bell_state():
     result = backend.run(_bell_state_circuit())
 
     assert result is not None, "DDSIM backend should return a decision diagram"
+    assert result.size() >= 0
 
     vector = np.array(result.get_vector(), dtype=np.complex128)
 
