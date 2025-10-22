@@ -85,6 +85,9 @@ def _apply_operation(circuit: QuantumCircuit, op: Operation) -> None:
 class StatevectorBackend:
     """Simulate partitions by delegating to :mod:`qiskit-aer`."""
 
+    def __init__(self, *, method: str = "statevector") -> None:
+        self._method = method
+
     @staticmethod
     def _collect_result_errors(result: Any) -> Iterable[str]:
         status = getattr(result, "status", None)
@@ -165,7 +168,12 @@ class StatevectorBackend:
                 progress_cb(max(1, len(ops)))
             return np.asarray(state.data, dtype=np.complex128)
 
-        if want_statevector and initial_state is None and ops:
+        if (
+            self._method == "statevector"
+            and want_statevector
+            and initial_state is None
+            and ops
+        ):
             state = Statevector.from_instruction(qc)
             if progress_cb is not None:
                 progress_cb(max(1, len(ops)))
@@ -181,7 +189,7 @@ class StatevectorBackend:
             run_args["initial_statevector"] = vec
 
         with _AER_LOCK:
-            simulator = AerSimulator(method="statevector")
+            simulator = AerSimulator(method=self._method)
             executable = qc.copy()
             executable.save_statevector()
             try:
@@ -223,3 +231,10 @@ class StatevectorBackend:
             LOGGER.warning("Unable to fetch statevector result from qiskit-aer: %s", exc)
             raise StatevectorSimulationError(str(exc)) from exc
         return np.asarray(state, dtype=np.complex128)
+
+
+class MatrixProductStateBackend(StatevectorBackend):
+    """Simulate partitions using qiskit-aer's matrix product state method."""
+
+    def __init__(self) -> None:
+        super().__init__(method="matrix_product_state")
