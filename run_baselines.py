@@ -22,7 +22,12 @@ def main():
     p.add_argument("--block-size", type=int, default=8)
     p.add_argument("--depth", type=int, default=200)
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--which", type=str, default="all", help="sv,dd,tableau or comma-separated")
+    p.add_argument(
+        "--which",
+        type=str,
+        default="all",
+        help="sv,dd,tableau,hybridq or comma-separated",
+    )
     p.add_argument("--per-partition", action="store_true", help="run backend on each independent partition separately")
     p.add_argument("--max-ram-gb", type=float, default=None, help="cap SV; if exceeded returns estimate only")
     p.add_argument("--sv-ampops-per-sec", type=float, default=None, help="SV throughput to convert amp_ops to seconds (optional)")
@@ -39,11 +44,15 @@ def main():
 
     which_list: List[str]
     if args.which == "all":
-        which_list = ["tableau","sv","dd"]
+        which_list = ["tableau", "sv", "dd", "hybridq"]
     else:
-        which_list = [w.strip() for w in args.which.split(",") if w.strip() in {"sv","dd","tableau"}]
+        which_list = [
+            w.strip()
+            for w in args.which.split(",")
+            if w.strip() in {"sv", "dd", "tableau", "hybridq"}
+        ]
         if not which_list:
-            raise SystemExit("No valid --which provided (use sv, dd, tableau)")
+            raise SystemExit("No valid --which provided (use sv, dd, tableau, hybridq)")
 
     # Heartbeat thread (coarse; baselines may block in backend)
     stop = threading.Event()
