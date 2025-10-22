@@ -6,3 +6,4 @@ mqt.ddsim>=2.0.0
 stim>=1.15.0
 numpy
 matplotlib
+hybridq
