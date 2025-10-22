@@ -12,10 +12,15 @@ from typing import Any, Dict, List, Literal, Optional
 
 from ..analyzer import analyze
 from ..backends.dd import DecisionDiagramBackend, ddsim_available
+from ..backends.hybridq import (
+    HybridQBackend,
+    HybridQConversionError,
+    hybridq_available,
+)
 from ..backends.sv import StatevectorBackend, estimate_sv_bytes
 from ..backends.tableau import TableauBackend, stim_available
 
-Which = Literal["tableau","sv","dd"]
+Which = Literal["tableau", "sv", "dd", "hybridq"]
 
 LOG = logging.getLogger(__name__)
 
@@ -137,36 +142,88 @@ def _run_backend_impl(
                 "error": None if out is not None else "SV failed (backend returned None)",
             }
 
-        out = TableauBackend().run(circuit)
-        t1 = perf_counter()
-        # If non-Clifford, provide no strict estimate; report metrics only
-        if out is None:
-            est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
-            est["note"] = "Not Clifford; tableau inapplicable. SV worst-case bound provided."
-            result = {
-                "ok": False,
+        if which == "tableau":
+            out = TableauBackend().run(circuit)
+            t1 = perf_counter()
+            # If non-Clifford, provide no strict estimate; report metrics only
+            if out is None:
+                est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
+                est["note"] = "Not Clifford; tableau inapplicable. SV worst-case bound provided."
+                result = {
+                    "ok": False,
+                    "backend": "tableau",
+                    "elapsed_s": 0.0,
+                    "wall_s_measured": 0.0,
+                    "error": "Tableau failed (non-Clifford)",
+                    "estimate": est,
+                }
+                mem_est = est.get("mem_bytes")
+                if mem_est is not None:
+                    result["mem_bytes_estimated"] = int(mem_est)
+                time_est = est.get("time_est_sec")
+                if time_est is not None:
+                    result["wall_s_estimated"] = float(time_est)
+                return result
+
+            return {
+                "ok": True,
                 "backend": "tableau",
-                "elapsed_s": 0.0,
-                "wall_s_measured": 0.0,
-                "error": "Tableau failed (non-Clifford)",
-                "estimate": est,
+                "statevector_len": len(out),
+                "elapsed_s": t1 - t0,
+                "wall_s_measured": t1 - t0,
+                "mem_bytes": 64 * 1024 * 1024,
+                "error": None,
             }
-            mem_est = est.get("mem_bytes")
-            if mem_est is not None:
-                result["mem_bytes_estimated"] = int(mem_est)
-            time_est = est.get("time_est_sec")
-            if time_est is not None:
-                result["wall_s_estimated"] = float(time_est)
-            return result
-        return {
-            "ok": True,
-            "backend": "tableau",
-            "statevector_len": len(out),
-            "elapsed_s": t1 - t0,
-            "wall_s_measured": t1 - t0,
-            "mem_bytes": 64 * 1024 * 1024,
-            "error": None,
-        }
+
+        if which == "hybridq":
+            if not hybridq_available():
+                est = _estimate_sv(circuit, ampops_per_sec=sv_ampops_per_sec)
+                est["note"] = "HybridQ unavailable; worst-case SV bound"
+                return {
+                    "ok": False,
+                    "backend": "hybridq",
+                    "error": "hybridq not available",
+                    "elapsed_s": 0.0,
+                    "wall_s_measured": 0.0,
+                    "estimate": est,
+                }
+
+            backend = HybridQBackend()
+            try:
+                result = backend.run(circuit, want_statevector=False)
+            except HybridQConversionError as exc:
+                t_fail = perf_counter()
+                return {
+                    "ok": False,
+                    "backend": "hybridq",
+                    "statevector_len": None,
+                    "elapsed_s": t_fail - t0,
+                    "wall_s_measured": t_fail - t0,
+                    "error": str(exc),
+                }
+
+            t1 = perf_counter()
+            if result is None:
+                return {
+                    "ok": False,
+                    "backend": "hybridq",
+                    "statevector_len": None,
+                    "elapsed_s": t1 - t0,
+                    "wall_s_measured": t1 - t0,
+                    "error": "HybridQ backend returned no result",
+                }
+
+            wall = result.runtime_s if result.runtime_s is not None else t1 - t0
+            return {
+                "ok": True,
+                "backend": "hybridq",
+                "statevector_len": result.statevector_len,
+                "elapsed_s": t1 - t0,
+                "wall_s_measured": float(wall),
+                "mem_bytes": None,
+                "error": None,
+                "info": result.info,
+            }
 
 
 def _backend_worker(
@@ -410,7 +467,7 @@ def run_baselines(circuit, *, which: Optional[List[Which]] = None, per_partition
                   max_ram_gb: float | None = None, sv_ampops_per_sec: float | None = None,
                   timeout_s: float | None = None, log: Optional[logging.Logger] = None) -> Dict[str, Any]:
     logger = log or LOG
-    which = which or ["tableau", "sv", "dd"]
+    which = which or ["tableau", "sv", "dd", "hybridq"]
     payload: Dict[str, Any] = {"per_partition": per_partition, "entries": []}
     for w in which:
         logger.info("Starting baseline backend=%s", w)
