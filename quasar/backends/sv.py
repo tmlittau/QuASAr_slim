@@ -7,6 +7,7 @@ from typing import Any, Callable, Iterable, Optional
 import numpy as np
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
+from qiskit.quantum_info import Statevector
 try:  # pragma: no cover - fallback for stubbed qiskit in tests
     from qiskit.exceptions import QiskitError
 except Exception:  # pragma: no cover - fallback when exceptions module missing
@@ -23,6 +24,19 @@ _AER_LOCK = threading.Lock()
 
 class StatevectorSimulationError(RuntimeError):
     """Raised when qiskit-aer cannot provide a statevector result."""
+
+
+class StatevectorQubitMappingError(RuntimeError):
+    """Raised when a partition references qubits that are not in its register."""
+
+    def __init__(self, partition_id: str, gate: str, qubit: str) -> None:
+        message = (
+            f"Partition '{partition_id}' cannot apply gate '{gate}' to unmapped qubit '{qubit}'."
+        )
+        super().__init__(message)
+        self.partition_id = partition_id
+        self.gate = gate
+        self.qubit = qubit
 
 
 def estimate_sv_bytes(n_qubits: int) -> int:
@@ -100,13 +114,35 @@ class StatevectorBackend:
     ) -> Optional[np.ndarray]:
         del batch_size
 
-        num_qubits, ops = extract_operations(circuit)
+        partition_id = getattr(circuit, "partition_id", "unknown")
+        try:
+            num_qubits, ops = extract_operations(circuit)
+        except TypeError as exc:
+            gate = "unknown"
+            qubit_desc = "unknown"
+            circuit_data = getattr(circuit, "data", [])
+            known_qubits = set(getattr(circuit, "qubits", []))
+            for entry in circuit_data:
+                operation = getattr(entry, "operation", None)
+                qargs = getattr(entry, "qubits", None)
+                if operation is None or qargs is None:
+                    if isinstance(entry, tuple) and len(entry) >= 2:
+                        operation, qargs = entry[0], entry[1]
+                    else:
+                        continue
+                for qb in qargs:
+                    if qb not in known_qubits:
+                        gate = getattr(operation, "name", str(operation)).lower()
+                        qubit_desc = str(qb)
+                        break
+                if gate != "unknown" or qubit_desc != "unknown":
+                    break
+            raise StatevectorQubitMappingError(partition_id, gate, qubit_desc) from exc
         if num_qubits == 0 and want_statevector:
             return np.array([1.0 + 0.0j], dtype=np.complex128)
         if num_qubits == 0:
             return None
 
-        partition_id = getattr(circuit, "partition_id", "unknown")
         LOGGER.debug(
             "Simulating partition %s on statevector backend with %d qubits and %d ops.",
             partition_id,
@@ -117,6 +153,23 @@ class StatevectorBackend:
         qc = QuantumCircuit(num_qubits)
         for op in ops:
             _apply_operation(qc, op)
+
+        if initial_state is not None and want_statevector:
+            vec = np.asarray(initial_state, dtype=np.complex128).ravel()
+            expected = 1 << num_qubits
+            if vec.size != expected:
+                raise ValueError(
+                    f"Initial state has dimension {vec.size}, expected {expected} for {num_qubits} qubits.")
+            state = Statevector(vec).evolve(qc)
+            if progress_cb is not None:
+                progress_cb(max(1, len(ops)))
+            return np.asarray(state.data, dtype=np.complex128)
+
+        if want_statevector and initial_state is None and ops:
+            state = Statevector.from_instruction(qc)
+            if progress_cb is not None:
+                progress_cb(max(1, len(ops)))
+            return np.asarray(state.data, dtype=np.complex128)
 
         run_args = {"shots": 1}
         if initial_state is not None:
@@ -131,7 +184,10 @@ class StatevectorBackend:
             simulator = AerSimulator(method="statevector")
             executable = qc.copy()
             executable.save_statevector()
-            executable = transpile(executable, simulator)
+            try:
+                executable = transpile(executable, simulator)
+            except AttributeError:
+                executable = transpile(executable, None)
 
             try:
                 result = simulator.run(executable, **run_args).result()
