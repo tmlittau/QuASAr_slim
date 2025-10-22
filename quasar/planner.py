@@ -243,14 +243,22 @@ def _linear_plan(plan: Plan, cfg: PlannerConfig) -> Plan:
 
 
 def _should_use_quick_path(plan: Plan, cfg: PlannerConfig) -> bool:
-    if len(plan.qusds) <= max(1, cfg.quick_path_partition_threshold):
+    partition_threshold = cfg.quick_path_partition_threshold
+    if partition_threshold >= 0 and len(plan.qusds) <= max(1, partition_threshold):
         return True
     total_gates = 0
     max_qubits = 0
     for node in plan.qusds:
         total_gates += int(node.metrics.get("num_gates", 0) or 0)
         max_qubits = max(max_qubits, int(node.metrics.get("num_qubits", 0) or 0))
-    if total_gates <= cfg.quick_path_gate_threshold and max_qubits <= cfg.quick_path_qubit_threshold:
+    gate_threshold = cfg.quick_path_gate_threshold
+    qubit_threshold = cfg.quick_path_qubit_threshold
+    if (
+        gate_threshold >= 0
+        and qubit_threshold >= 0
+        and total_gates <= gate_threshold
+        and max_qubits <= qubit_threshold
+    ):
         return True
     return False
 
