@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -16,6 +17,29 @@ LOGGER = logging.getLogger(__name__)
 
 
 _DDSIM_LOCK = threading.Lock()
+
+
+@dataclass
+class _DecisionDiagramResult:
+    """Wrapper keeping DDSIM's simulator alive for downstream consumers."""
+
+    simulator: "ddsim.CircuitSimulator"
+    decision_diagram: "mqt.core.dd.VectorDD"
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self.decision_diagram, name)
+
+        if callable(attribute):
+            # Wrap callables so ``self`` stays alive for the duration of the
+            # delegated call, preventing the simulator from being destroyed
+            # mid-execution when users chain ``run(...).method()``.
+
+            def method(*args: Any, _attribute=attribute, _self=self, **kwargs: Any) -> Any:
+                return _attribute(*args, **kwargs)
+
+            return method
+
+        return attribute
 
 
 def ddsim_available() -> bool:
@@ -122,4 +146,4 @@ class DecisionDiagramBackend:
                 except Exception:
                     LOGGER.exception("DDSIM did not provide a statevector representation.")
                     return None
-            return dd
+            return _DecisionDiagramResult(simulator=simulator, decision_diagram=dd)

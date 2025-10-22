@@ -67,11 +67,20 @@ def test_decision_diagram_backend_matches_bell_state():
     result = backend.run(_bell_state_circuit())
 
     assert result is not None, "DDSIM backend should return a decision diagram"
+    assert result.size() >= 0
 
     vector = np.array(result.get_vector(), dtype=np.complex128)
 
     assert vector.shape == (4,)
     assert np.allclose(vector, _expected_bell_state())
+
+    chained_vector = np.array(
+        DecisionDiagramBackend().run(_bell_state_circuit()).get_vector(),
+        dtype=np.complex128,
+    )
+
+    assert chained_vector.shape == (4,)
+    assert np.allclose(chained_vector, _expected_bell_state())
 
 
 def test_statevector_backend_flags_mismapped_qubits():
